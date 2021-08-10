@@ -37,6 +37,7 @@ const int udpport = 9000;
 boolean server_mode;
 boolean ap_mode;
 boolean udp_send_edge;
+boolean connected;
 static WiFiUDP wudp;
 
 struct DotDash
@@ -126,8 +127,22 @@ enum KeyState
 int keystate;
 unsigned long lastpoll;
 
+void handleWiFiEvent(WiFiEvent_t event)
+{
+  switch (event)
+  {
+  case SYSTEM_EVENT_STA_DISCONNECTED:
+    connected = false;
+    Serial.println("WiFi Lost Connection...");
+    break;
+  }
+}
+
 void wifi_setup()
 {
+  digitalWrite(gpio_led, HIGH);
+  WiFi.disconnect(true);
+  WiFi.onEvent(handleWiFiEvent);
   if (server_mode)
   {
     if (ap_mode)
@@ -182,6 +197,8 @@ void wifi_setup()
     wudp.begin(udpport);
     Serial.println("Client Ready");
   }
+  connected = true;
+  digitalWrite(gpio_led, LOW);
 }
 
 void setup()
@@ -197,6 +214,7 @@ void setup()
   digitalWrite(gpio_out, LOW);
   digitalWrite(gpio_led, LOW);
 
+  connected = false;
   if (digitalRead(gpio_key) == HIGH)
   {
     server_mode = false;
@@ -418,7 +436,11 @@ void toggleKeyTime()
 
 void loop()
 {
-  if (server_mode)
+  if (!connected)
+  {
+    wifi_setup();
+  }
+  else if (server_mode)
   {
     receive_udp();
 
