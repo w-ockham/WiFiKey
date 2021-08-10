@@ -29,8 +29,8 @@ const IPAddress subnet(255, 255, 255, 0);
 const int udpport = 9000;
 
 /* Packet Type & Queue params. */
-#define SYMBOLWAIT 3      /* Wait three symbol */
-#define QLATENCY 150      /* Process symbol 150 msec elapsed. */
+#define SYMBOLWAIT 5      /* Wait five symbol */
+#define QLATENCY 300      /* Process symbol 300 msec elapsed. */
 #define MAXDURATION 10000 /* Maximum MARK duration */
 
 /* Global variables */
