@@ -433,7 +433,7 @@ void space()
   digitalWrite(gpio_out, LOW);
 }
 
-unsigned long lastmark;
+unsigned long lastmark = 0;
 void toggleKeyEdge()
 {
   DotDash d;
