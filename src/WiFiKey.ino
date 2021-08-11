@@ -12,8 +12,8 @@ const uint8_t gpio_led = 26;   /* to LED */
 const uint8_t gpio_out = 27;   /* to Photocoupler */
 
 /* Packet Type & Queue params. */
-#define SYMBOLWAIT 4     /* Wait four symbol */
-#define QLATENCY 50       /* Process queued symbol if ((mark and space duriotn) + 50) msec elapsed. */
+#define SYMBOLWAIT 4      /* Wait four symbol */
+#define QLATENCY 10       /* Process queued symbol if ((mark and space duriotn) + 10) msec elapsed. */
 #define MAXDURATION 10000 /* Maximum MARK duration */
 
 /* WiFi and IP Address configrations */
@@ -118,7 +118,6 @@ enum KeyState
   SPACE
 };
 int keystate;
-unsigned long lastpoll;
 
 void handleWiFiEvent(WiFiEvent_t event)
 {
@@ -141,7 +140,7 @@ void handleRoot(void)
   if (httpServer.hasArg("queuelatency"))
   {
     param = httpServer.arg("queuelatency").toInt();
-    if ((param > 50) && (param < 1000) && (queuelatency != param))
+    if ((param >= 0) && (param <= 5000) && (queuelatency != param))
     {
       queuelatency = param;
       pkt_error = 0;
@@ -153,7 +152,7 @@ void handleRoot(void)
   if (httpServer.hasArg("symbolwait"))
   {
     param = httpServer.arg("symbolwait").toInt();
-    if ((param > 0) && (param < 50) && (symbolwait != param))
+    if ((param > 0) && (param <= 20) && (symbolwait != param))
     {
       symbolwait = param;
       pkt_error = 0;
@@ -330,7 +329,6 @@ void setup()
   initQueue();
 
   keystate = NONE;
-  lastpoll = 0;
   prev_seq = 0;
   seq_number = 0;
   lastmillis = 0;
@@ -387,6 +385,8 @@ void send_udp()
   wudp.endPacket();
 }
 
+unsigned long lastqueued;
+
 void receive_udp()
 {
   DotDash d;
@@ -415,7 +415,7 @@ void receive_udp()
       if ((d.d > 0) && (d.d < short_mark))
         short_mark = d.d;
     }
-
+    lastqueued = millis();
     enqueue(d);
   }
 }
@@ -433,7 +433,7 @@ void space()
   digitalWrite(gpio_out, LOW);
 }
 
-unsigned long lastmark = 0;
+unsigned long lastmark;
 void toggleKeyEdge()
 {
   DotDash d;
@@ -468,9 +468,8 @@ void toggleKeyTime()
 
   if (keystate == NONE)
   {
-    if (queLength() > symbolwait || (now - lastpoll) > (long_mark + space_duration + queuelatency))
+    if (queLength() > symbolwait || (now - lastqueued) > (long_mark + space_duration + queuelatency))
     {
-      lastpoll = now;
       if (isEmpty())
         return;
       dequeue(d);
@@ -498,7 +497,7 @@ void toggleKeyTime()
     if ((now - startperiod) > duration)
     {
       space();
-      lastpoll = now;
+      lastmark = now;
       if (isEmpty())
       {
         keystate = NONE;
@@ -567,9 +566,7 @@ void loop()
     {
       digitalWrite(gpio_led, HIGH);
       if (udp_send_edge)
-      {
         send_udp();
-      }
     }
   }
   httpServer.handleClient();
