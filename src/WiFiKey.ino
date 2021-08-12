@@ -13,7 +13,7 @@ const uint8_t gpio_out = 27;   /* to Photocoupler */
 
 /* Packet Type & Queue params. */
 #define SYMBOLWAIT 4      /* Wait four symbol */
-#define QLATENCY 10       /* Process queued symbol if ((mark and space duriotn) + 10) msec elapsed. */
+#define QLATENCY 1       /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
 #define MAXDURATION 10000 /* Maximum MARK duration */
 
 /* WiFi and IP Address configrations */
@@ -64,15 +64,19 @@ boolean isFull()
   return (_head == ((_tail + 1) % QUEUESIZE));
 }
 
+static int max_queue_length = 0;
+
 int queLength()
 {
   int c = _tail - _head;
   if (c < 0)
     c += QUEUESIZE;
+  if (c > max_queue_length)
+    max_queue_length = c;
   return c;
 }
 
-void enqueue(DotDash &d)
+int enqueue(DotDash &d)
 {
   if (isFull())
   {
@@ -80,13 +84,15 @@ void enqueue(DotDash &d)
     Serial.println("Queue full");
 #endif
     queue_error++;
-    return;
+    return 0;
   }
   _queue[_tail].edge = d.edge;
   _queue[_tail].seq = d.seq;
   _queue[_tail].t = d.t;
   _queue[_tail].d = d.d;
   _tail = (_tail + 1) % QUEUESIZE;
+
+  return queLength();
 }
 
 void dequeue(DotDash &d)
@@ -135,16 +141,16 @@ void handleRoot(void)
   String response;
   String updated = "";
   unsigned int param;
-  float estimated_wpm = 0, estimated_ratio = 0;
 
   if (httpServer.hasArg("queuelatency"))
   {
     param = httpServer.arg("queuelatency").toInt();
-    if ((param >= 0) && (param <= 5000) && (queuelatency != param))
+    if ((param > 0) && (param <=10) && (queuelatency != param))
     {
       queuelatency = param;
       pkt_error = 0;
       queue_error = 0;
+      prev_seq = 0;
       updated = "<p> Parameter updated.</p>";
     }
   }
@@ -157,19 +163,10 @@ void handleRoot(void)
       symbolwait = param;
       pkt_error = 0;
       queue_error = 0;
+      prev_seq = 0;
       updated = "<p> Parameter updated.</p>";
     }
   }
-
-  if (short_mark < MAX_MARK_DURAION && short_mark != 0)
-  {
-    estimated_wpm = 1200 / short_mark;
-    estimated_ratio = long_mark / short_mark;
-  }
-
-  short_mark = MAX_MARK_DURAION;
-  long_mark = 0;
-  prev_seq = 0;
 
   response =
       "<!DOCTYPE html>"
@@ -183,25 +180,14 @@ void handleRoot(void)
       "<p>Server Address:" +
       WiFi.localIP().toString() +
       "</p>"
-      "<p>Estimated WPM:" +
-      String(estimated_wpm, 1) +
-      "wpm<br>"
-      "Estimated Dash Dot Ratio:" +
-      String(estimated_ratio, 1) +
-      "<br>"
-      "Packet Error:" +
-      String(pkt_error) +
-      "<br>"
-      "Queue Error:" +
-      String(queue_error) +
-      "<br></p>"
+      "<iframe src=\"./stats.html\" width=\"320\" height=\"200\"></iframe>"
       "<form action=\"\" method=\"get\">"
-      "<p> QueueLatency:"
+      "<p> Queue Latency:"
       " <input type=\"textarea\" size=\"5\" name=\"queuelatency\" value=\"" +
       String(queuelatency) +
       "\">"
       "<br>"
-      "SymbolWait:"
+      "Symbol Wait:"
       " <input type=\"textarea\" size=\"5\" name=\"symbolwait\" value=\"" +
       String(symbolwait) +
       "\">"
@@ -209,6 +195,53 @@ void handleRoot(void)
       "<input type=\"submit\" name=\"submit\" value=\"Set\"></p>"
       "</form><hr>" +
       updated + "</body></html>";
+
+  httpServer.send(200, "text/html", response);
+}
+
+void handleStats(void)
+{
+  String response;
+  float estimated_wpm = 0, estimated_ratio = 0;
+
+  if (short_mark < MAX_MARK_DURAION && short_mark != 0)
+  {
+    estimated_wpm = 1200 / short_mark;
+    estimated_ratio = long_mark / short_mark;
+  }
+
+  response =
+      "<!DOCTYPE html>"
+      "<html>"
+      "<head>"
+      " <meta charset=\"utf-8\">"
+      " <meta http-equiv=\"Refresh\" content=\"3\">"
+      "</head>"
+      "<body>"
+      "<p>Estimated Speed: " +
+      String(estimated_wpm, 1) +
+      " WPM<br>"
+      "Estimated Dash Dot Ratio: " +
+      String(estimated_ratio, 1) +
+      "<br>"
+      "Packet Error: " +
+      String(pkt_error) +
+      "<br>"
+      "Queue Error: " +
+      String(queue_error) +
+      "<br>"
+      "Max queue length: " +
+      String(max_queue_length) +
+      "<br>"
+      "Max long mark duration: " +
+      String(long_mark) +
+      "ms<br>"
+      "Space duration: " +
+      String(space_duration) +
+      "ms<br></p>"
+      "</body></html>";
+
+  max_queue_length = 0;
 
   httpServer.send(200, "text/html", response);
 }
@@ -250,11 +283,12 @@ void wifi_setup()
     wudp.begin(udpport);
 
     pkt_error = 0;
+    max_queue_length = 0;
     queue_error = 0;
-    long_mark = 0;
     short_mark = MAX_MARK_DURAION;
 
     httpServer.on("/", handleRoot);
+    httpServer.on("/stats.html", handleStats);
     httpServer.onNotFound(handleNotFound);
     httpServer.begin();
 
@@ -468,13 +502,15 @@ void toggleKeyTime()
 
   if (keystate == NONE)
   {
-    if (queLength() > symbolwait || (now - lastqueued) > (long_mark + space_duration + queuelatency))
+    if (queLength() > symbolwait || (now - lastqueued) > (long_mark + space_duration) * queuelatency)
     {
       if (isEmpty())
         return;
       dequeue(d);
       if (d.edge == RISE_EDGE)
       {
+        long_mark = 0;
+        short_mark = MAX_MARK_DURAION;
         keystate = MARK;
         debug_print("MARK", d);
         prev_t = d.t;
