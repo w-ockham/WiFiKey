@@ -54,7 +54,7 @@ WiFiを使ってリモートからリグのキーイングを行う実験用シ�
 | Estimated Speed| 推定キーイング速度(WPM) |
 | Estimated Dash Dot Ratio| 長点・短点の比 |
 | Packet Error | パケットエラー数 |
-｜Packet Delay |パケットのディレイ(ms)|
+|Packet Delay |パケットのディレイ(ms)|
 | Queue Error | キュー溢れ回数 |
 | Max queue length | キューに溜まったシンボルの最大個数 |
 | Max mark duration | 長点の長さ(ms)|
