@@ -13,13 +13,17 @@ const uint8_t gpio_out = 27;   /* to Photocoupler */
 
 /* Packet Type & Queue params. */
 #define SYMBOLWAIT 4      /* Wait four symbol */
-#define QLATENCY 1       /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
+#define QLATENCY 1        /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
 #define MAXDURATION 10000 /* Maximum MARK duration */
 
 /* WiFi and IP Address configrations */
 #include "config_wifi.h"
 
+/* Simple Ring Buffer */
+#include "ringqueue.h"
+
 /* Global variables */
+IPAddress receiver;
 unsigned int symbolwait = SYMBOLWAIT;
 unsigned int queuelatency = QLATENCY;
 boolean server_mode;
@@ -29,91 +33,42 @@ boolean connected;
 WiFiUDP wudp;
 WebServer httpServer(httpport);
 #define MAX_MARK_DURAION 1000
-unsigned int pkt_error;
-unsigned int queue_error;
+int pkt_error, pkt_delay;
 unsigned int long_mark, short_mark;
 unsigned int space_duration;
 unsigned long prev_seq;
+unsigned long seq_number;
+
+enum DataType
+{
+  PKT_CODE,
+  PKT_SERIAL
+};
+
+enum EdgeType
+{
+  RISE_EDGE = 1,
+  FALL_EDGE
+};
 
 struct DotDash
 {
-  uint8_t edge;
+  DataType type;
+  uint8_t data;
   unsigned long seq;
   unsigned long t;
   unsigned long d;
 };
 
-static int _head, _tail;
-
-#define QUEUESIZE 256
-DotDash _queue[QUEUESIZE];
-
-void initQueue()
-{
-  _head = 0;
-  _tail = 0;
-}
-
-boolean isEmpty()
-{
-  return (_head == _tail);
-}
-
-boolean isFull()
-{
-  return (_head == ((_tail + 1) % QUEUESIZE));
-}
-
-static int max_queue_length = 0;
-
-int queLength()
-{
-  int c = _tail - _head;
-  if (c < 0)
-    c += QUEUESIZE;
-  if (c > max_queue_length)
-    max_queue_length = c;
-  return c;
-}
-
-int enqueue(DotDash &d)
-{
-  if (isFull())
-  {
-#ifdef DEBUG
-    Serial.println("Queue full");
-#endif
-    queue_error++;
-    return 0;
-  }
-  _queue[_tail].edge = d.edge;
-  _queue[_tail].seq = d.seq;
-  _queue[_tail].t = d.t;
-  _queue[_tail].d = d.d;
-  _tail = (_tail + 1) % QUEUESIZE;
-
-  return queLength();
-}
-
-void dequeue(DotDash &d)
-{
-  if (isEmpty())
-  {
-    return;
-  }
-  d.edge = _queue[_head].edge;
-  d.seq = _queue[_head].seq;
-  d.t = _queue[_head].t;
-  d.d = _queue[_head].d;
-  _head = (_head + 1) % QUEUESIZE;
-}
+RingQueue<DotDash> queue = RingQueue<DotDash>();
+unsigned long lastqueued;
 
 /* ISR Stuff */
 #define STABLEPERIOD 5 /* Discard Interrupts 5msec */
-volatile unsigned long seq_number;
-volatile unsigned long lastmillis, stableperiod;
-volatile boolean changed;
-volatile DotDash dotdash;
+volatile int key_edge;
+volatile boolean key_changed;
+volatile unsigned long key_time, key_duration;
+volatile unsigned long stableperiod, lastmillis;
 void IRAM_ATTR keyIn(void);
 
 /* Key state */
@@ -129,6 +84,10 @@ void handleWiFiEvent(WiFiEvent_t event)
 {
   switch (event)
   {
+  case SYSTEM_EVENT_STA_GOT_IP:
+    Serial.print("WiFi Connected IP Address:");
+    Serial.println(WiFi.localIP());
+    break;
   case SYSTEM_EVENT_STA_DISCONNECTED:
     connected = false;
     Serial.println("WiFi Lost Connection...");
@@ -145,11 +104,10 @@ void handleRoot(void)
   if (httpServer.hasArg("queuelatency"))
   {
     param = httpServer.arg("queuelatency").toInt();
-    if ((param > 0) && (param <=10) && (queuelatency != param))
+    if ((param > 0) && (param <= 10) && (queuelatency != param))
     {
       queuelatency = param;
       pkt_error = 0;
-      queue_error = 0;
       prev_seq = 0;
       updated = "<p> Parameter updated.</p>";
     }
@@ -162,7 +120,6 @@ void handleRoot(void)
     {
       symbolwait = param;
       pkt_error = 0;
-      queue_error = 0;
       prev_seq = 0;
       updated = "<p> Parameter updated.</p>";
     }
@@ -204,11 +161,13 @@ void handleStats(void)
   String response;
   float estimated_wpm = 0, estimated_ratio = 0;
 
-  if (short_mark < MAX_MARK_DURAION && short_mark != 0)
+  if (short_mark > 0)
   {
-    estimated_wpm = 1200 / short_mark;
+    if (short_mark < MAX_MARK_DURAION)
+      estimated_wpm = 1200 / short_mark;
     estimated_ratio = long_mark / short_mark;
   }
+  short_mark = MAX_MARK_DURAION;
 
   response =
       "<!DOCTYPE html>"
@@ -219,7 +178,7 @@ void handleStats(void)
       "</head>"
       "<body>"
       "<p>Estimated Speed: " +
-      String(estimated_wpm, 1) +
+      String(estimated_wpm, 0) +
       " WPM<br>"
       "Estimated Dash Dot Ratio: " +
       String(estimated_ratio, 1) +
@@ -227,11 +186,11 @@ void handleStats(void)
       "Packet Error: " +
       String(pkt_error) +
       "<br>"
-      "Queue Error: " +
-      String(queue_error) +
+      "Packet Delay: " +
+      String(pkt_delay) +
       "<br>"
       "Max queue length: " +
-      String(max_queue_length) +
+      String(queue.maxLength()) +
       "<br>"
       "Max long mark duration: " +
       String(long_mark) +
@@ -240,9 +199,7 @@ void handleStats(void)
       String(space_duration) +
       "ms<br></p>"
       "</body></html>";
-
-  max_queue_length = 0;
-
+  pkt_delay = 0;
   httpServer.send(200, "text/html", response);
 }
 
@@ -253,9 +210,11 @@ void handleNotFound(void)
 
 void wifi_setup()
 {
+  connected = false;
   digitalWrite(gpio_led, HIGH);
   WiFi.disconnect(true);
   WiFi.onEvent(handleWiFiEvent);
+
   if (server_mode)
   {
     if (ap_mode)
@@ -263,7 +222,7 @@ void wifi_setup()
       WiFi.mode(WIFI_AP);
       WiFi.softAP(ssid[0], passwd[0]);
       delay(100);
-      WiFi.softAPConfig(gateway, gateway, subnet);
+      WiFi.softAPConfig(ap_server, ap_server, subnet);
       Serial.print("Server address: ");
       Serial.println(WiFi.softAPIP());
     }
@@ -280,11 +239,10 @@ void wifi_setup()
       Serial.print("Server ddress: ");
       Serial.println(WiFi.localIP());
     }
+
     wudp.begin(udpport);
 
     pkt_error = 0;
-    max_queue_length = 0;
-    queue_error = 0;
     short_mark = MAX_MARK_DURAION;
 
     httpServer.on("/", handleRoot);
@@ -299,7 +257,9 @@ void wifi_setup()
     if (ap_mode)
     {
       WiFi.mode(WIFI_STA);
-      WiFi.config(client, gateway, subnet);
+      WiFi.config(client, ap_server, subnet);
+      receiver = ap_server;
+
       WiFi.begin(ssid[0], passwd[0]);
       while (WiFi.status() != WL_CONNECTED)
       {
@@ -310,6 +270,8 @@ void wifi_setup()
     }
     else
     {
+      receiver = server;
+
       WiFi.begin(ssid[1], passwd[1]);
       while (WiFi.status() != WL_CONNECTED)
       {
@@ -318,6 +280,7 @@ void wifi_setup()
       }
       Serial.println("Connected.");
     }
+
     wudp.begin(udpport);
     Serial.println("Client Ready");
   }
@@ -360,21 +323,14 @@ void setup()
     udp_send_edge = true;
 
   wifi_setup();
-  initQueue();
-
   keystate = NONE;
   prev_seq = 0;
   seq_number = 0;
+  lastqueued = 0;
   lastmillis = 0;
   stableperiod = 0;
-  changed = false;
+  key_changed = false;
 }
-
-enum EdgeType
-{
-  RISE_EDGE = 1,
-  FALL_EDGE
-};
 
 void IRAM_ATTR keyIn()
 {
@@ -386,72 +342,50 @@ void IRAM_ATTR keyIn()
 
   if (digitalRead(gpio_key) == HIGH)
   {
-    dotdash.edge = RISE_EDGE;
-    seq_number++;
+    key_edge = RISE_EDGE;
   }
   else
   {
-    dotdash.edge = FALL_EDGE;
+    key_edge = FALL_EDGE;
     lastmillis = now;
   }
-
-  dotdash.seq = seq_number;
-  dotdash.t = now;
-  dotdash.d = now - lastmillis;
-  changed = true;
+  key_time = now;
+  key_duration = now - lastmillis;
+  key_changed = true;
 }
 
 void debug_print(const char *msg, DotDash &d)
 {
 #ifdef DEBUG
   Serial.printf("%s:[seq:%d] prev=%d, keystate=%d, edge=%d, t=%d, d=%d space= %d, shortest=%d longest=%d\n",
-                msg, d.seq, prev_seq, keystate, d.edge, d.t, d.d, space_duration, short_mark, long_mark);
+                msg, d.seq, prev_seq, keystate, d.data, d.t, d.d, space_duration, short_mark, long_mark);
 #endif
 }
 
-void send_udp()
+void send_udp(DotDash &d)
 {
-  if (ap_mode)
-    wudp.beginPacket(gateway, udpport);
-  else
-    wudp.beginPacket(server, udpport);
-  wudp.write((uint8_t *)&dotdash, sizeof(dotdash));
+  wudp.beginPacket(receiver, udpport);
+  wudp.write((uint8_t *)&d, sizeof(d));
   wudp.endPacket();
 }
 
-unsigned long lastqueued;
+unsigned long last_received = 0, last_received_pkt = 0;
 
-void receive_udp()
+int receive_udp(DotDash &d)
 {
-  DotDash d;
+  unsigned long now;
+
   int psize = wudp.parsePacket();
   if (psize > 0)
   {
+    now = millis();
     wudp.read((uint8_t *)&d, sizeof(d));
     wudp.flush();
-
-    if (d.seq == (prev_seq + 1))
-    {
-      debug_print("UDP", d);
-    }
-    else if (prev_seq != 0)
-    {
-      pkt_error++;
-      debug_print("UDPERR", d);
-    }
-    prev_seq = d.seq;
-
-    if (server_mode && !udp_send_edge)
-    {
-      if (d.d > long_mark)
-        long_mark = d.d;
-
-      if ((d.d > 0) && (d.d < short_mark))
-        short_mark = d.d;
-    }
-    lastqueued = millis();
-    enqueue(d);
+    pkt_delay = (now - last_received) - (d.t - last_received_pkt);
+    last_received = now;
+    last_received_pkt = d.t;
   }
+  return psize;
 }
 
 /* Toglle Key output */
@@ -468,46 +402,63 @@ void space()
 }
 
 unsigned long lastmark = 0;
-void toggleKeyEdge()
+void toggleKeyEdge(int psize, DotDash &d)
 {
-  DotDash d;
   unsigned long now = millis();
 
   if ((now - lastmark) > MAXDURATION)
     space();
 
-  if (isEmpty())
-    return;
-
-  dequeue(d);
-  if (d.edge == RISE_EDGE)
+  if (psize > 0)
   {
-    space();
+    if (d.data == RISE_EDGE)
+    {
+      space();
+    }
+    else
+    {
+      mark();
+      lastmark = now;
+    }
   }
-  else
-  {
-    mark();
-    lastmark = now;
-  }
-
-  return;
 }
 
-void toggleKeyTime()
+void toggleKeyTime(int psize, DotDash &d)
 {
   unsigned long now = millis();
   static unsigned long duration, startperiod;
   static unsigned long prev_t, prev_d;
-  static DotDash d;
+
+  if (psize > 0)
+  {
+    if (d.seq == (prev_seq + 1))
+    {
+      debug_print("UDP", d);
+    }
+    else if (prev_seq != 0)
+    {
+      pkt_error++;
+      debug_print("UDPERR", d);
+    }
+    prev_seq = d.seq;
+
+    if (d.d > long_mark)
+      long_mark = d.d;
+    if ((d.d > 0) && (d.d < short_mark))
+      short_mark = d.d;
+
+    queue.enqueue(d);
+    lastqueued = now;
+  }
 
   if (keystate == NONE)
   {
-    if (queLength() > symbolwait || (now - lastqueued) > (long_mark + space_duration) * queuelatency)
+    if (queue.length() > symbolwait || (now - lastqueued) > (long_mark + space_duration) * queuelatency)
     {
-      if (isEmpty())
+      if (queue.isEmpty())
         return;
-      dequeue(d);
-      if (d.edge == RISE_EDGE)
+      queue.dequeue(d);
+      if (d.data == RISE_EDGE)
       {
         long_mark = 0;
         short_mark = MAX_MARK_DURAION;
@@ -534,14 +485,14 @@ void toggleKeyTime()
     {
       space();
       lastmark = now;
-      if (isEmpty())
+      if (queue.isEmpty())
       {
         keystate = NONE;
         debug_print("NONE", d);
         return;
       }
-      dequeue(d);
-      if (d.edge == RISE_EDGE)
+      queue.dequeue(d);
+      if (d.data == RISE_EDGE)
       {
         keystate = SPACE;
         debug_print("SPACE", d);
@@ -577,33 +528,40 @@ void toggleKeyTime()
 
 void loop()
 {
+  DotDash d;
+
   if (!connected)
   {
     wifi_setup();
   }
   else if (server_mode)
   {
-    receive_udp();
+    int psize = receive_udp(d);
 
     if (udp_send_edge)
-      toggleKeyEdge();
-    else
-      toggleKeyTime();
+      toggleKeyEdge(psize, d);
+    else {
+      toggleKeyTime(psize, d);
+      httpServer.handleClient();
+    } 
   }
-  else if (changed)
+  else if (key_changed)
   {
-    changed = false;
-    if (dotdash.edge == RISE_EDGE)
+    key_changed = false;
+
+    if (udp_send_edge || (key_edge == RISE_EDGE))
     {
+      d.type = PKT_CODE;
+      d.data = key_edge;
+      d.t = key_time;
+      d.d = key_duration;
+      d.seq = seq_number++;
+      send_udp(d);
+    }
+
+    if (key_edge == RISE_EDGE)
       digitalWrite(gpio_led, LOW);
-      send_udp();
-    }
     else
-    {
       digitalWrite(gpio_led, HIGH);
-      if (udp_send_edge)
-        send_udp();
-    }
   }
-  httpServer.handleClient();
 }
