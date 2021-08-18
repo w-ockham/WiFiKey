@@ -41,6 +41,7 @@ boolean server_mode;
 boolean ap_mode;
 boolean udp_send_edge;
 boolean connected;
+boolean forbidden_reset_outside = false;
 
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
@@ -560,7 +561,7 @@ void process_incoming_packet(void)
 
       /* Connection closed by peer */
       case PKT_RST:
-        if (server_mode)
+        if (forbidden_reset_outside && server_mode)
         {
           if (authsender == wudp.remoteIP() && authport == wudp.remotePort())
             serverstate = KEYER_WAIT;
@@ -947,7 +948,10 @@ void loop()
 {
   if (!connected)
   {
+    if (server_mode)
+      space();
     wifi_setup();
+    serverstate = KEYER_WAIT;
   }
   else
   {
