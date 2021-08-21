@@ -11,12 +11,12 @@ const char *ap_passwd = "wifikey32";
 
 /* for WiFi Station  */
 const char *ssid[] = {
-    "Pixel5",
-    "Buffalo-85C0",
+    "SSID1",
+    "SSID2",
     NULL};
 const char *passwd[] = {
-    "wifikey32",
-    "rvrwyfgjsj7vs",
+    "PASSWD1",
+    "PASSWD2",
     NULL};
 
 /* IP Addresses */
@@ -26,7 +26,7 @@ IPAddress ap_client(192, 168, 4, 2);
 IPAddress ap_subnet(255, 255, 255, 0);
 
 /* Server global address */
-const char *keyer_global = "minecraft.penpen.tk";
-const int keyer_global_port = 50704;
+const char *keyer_global = "192.168.1.192";
+const int keyer_global_port = 56000;
 /* Server local port */
 const int keyer_local_port = 56000;
