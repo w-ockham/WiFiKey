@@ -1,27 +1,20 @@
 /* WiFi & IP Address Configrations */
 /* Keyer ID and password */
-const char *keyer_code = "123-456-789";
+const char *keyer_name = "wifikey";
 const char *keyer_passwd = "Passwd";
+const char *server_name = "wifikey";
 
 /* WiFi SSIDs and passwords */
-/* Standalone Access Point */
+/* for Standalone Access Point */
 const char *ap_ssid = "ESP32-WiFiKey";
 const char *ap_passwd = "wifikey32";
 
-/* Server */
-const char *server_ssid[] = {
-    "SSID", 
+/* for WiFi Station  */
+const char *ssid[] = {
+    "YOURSSID1",
+    "YOURSSID2",
     NULL};
-const char *server_passwd[] = {
-    "PASSWD",
-    NULL};
-
-/* Client */
-const char *client_ssid[] = {
-    "SSID1", 
-    "SSID2",
-    NULL};
-const char *client_passwd[] = {
+const char *passwd[] = {
     "PASSWD1",
     "PASSWD2",
     NULL};
@@ -30,14 +23,10 @@ const char *client_passwd[] = {
 /* Standalone */
 IPAddress ap_server(192, 168, 4, 1);
 IPAddress ap_client(192, 168, 4, 2);
+IPAddress ap_subnet(255, 255, 255, 0);
 
 /* Server global address */
-IPAddress global_server(192, 168, 1, 192);
-int global_udpport = 56000;
-
-/* Server local address */
-IPAddress local_server(192, 168, 1, 192);
-IPAddress local_gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-int local_httpport = 80;
-int local_udpport = 56000;
+const char *keyer_global = "192.168.1.192";
+const int keyer_global_port = 56000;
+/* Server local port */
+const int keyer_local_port = 56000;

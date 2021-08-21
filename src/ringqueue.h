@@ -1,8 +1,8 @@
 /*
 * Simple Ring Queue buffer
 */
-#ifndef ARDUINO_RING_QUEUE
-#define ARDUINO_RING_QUEUE
+#ifndef ARDUINO_WIFIKEY_RING_QUEUE
+#define ARDUINO_WIFIKEY_RING_QUEUE
 
 template <class T>
 class RingQueue
