@@ -5,7 +5,7 @@ const char *keyer_passwd = "Passwd";
 const char *server_name = "wifikey";
 
 /* WiFi SSIDs and passwords */
-/* Standalone Access Point */
+/* for Standalone Access Point */
 const char *ap_ssid = "ESP32-WiFiKey";
 const char *ap_passwd = "wifikey32";
 
@@ -25,7 +25,8 @@ IPAddress ap_server(192, 168, 4, 1);
 IPAddress ap_client(192, 168, 4, 2);
 IPAddress ap_subnet(255, 255, 255, 0);
 
-/* Server address:port */
+/* Server global address */
 const char *keyer_global = "minecraft.penpen.tk";
 const int keyer_global_port = 50704;
+/* Server local port */
 const int keyer_local_port = 56000;

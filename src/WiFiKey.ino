@@ -6,7 +6,6 @@
 
 #define DEBUG_LEVEL 1
 #define DROPPKT 0
-//#define USE_ISR
 
 /* GPIO setting */
 const uint8_t gpio_key = 14;   /* from Keyer */
@@ -95,12 +94,10 @@ struct KeyerPkt
     DotDash data;
     uint8_t hash[16];
     uint8_t buff[16];
-    long seed;
   };
 };
 
 RingQueue<DotDash> queue = RingQueue<DotDash>();
-RingQueue<DotDash> send_queue = RingQueue<DotDash>();
 unsigned long lastqueued;
 
 /* ISR Stuff */
@@ -159,11 +156,11 @@ void handleRoot(void)
       updated = "<p> Parameter updated.</p>";
     }
   }
-  if (server_mode) 
+  if (server_mode)
     keyer = "Server Address: ";
   else
     keyer = "Client Address: ";
-  
+
   keyer += WiFi.localIP().toString();
 
   response =
@@ -331,7 +328,7 @@ void debug_sem(String mesg, KeyerPkt p)
     break;
   case PKT_AUTH:
     type = "AUTH";
-    data = String(p.seed);
+    data = "";
     break;
   case PKT_CODE:
     type = "CODE";
@@ -417,7 +414,7 @@ void handle_code(PktType, DotDash &);
 
 void process_incoming_packet(void)
 {
-  static long keyseed;
+  static uint8_t keyseed[16];
   static KeyerPkt pkt_pushed;
   static boolean has_pushed = false;
   KeyerPkt k;
@@ -452,8 +449,13 @@ void process_incoming_packet(void)
         {
         /* Send challenge to client */
         case PKT_SYN:
-          keyseed = esp_random();
-          k.seed = keyseed;
+          MD5Builder md5;
+          md5.begin();
+          md5.add(keyer_name);
+          md5.add(String(esp_random()));
+          md5.calculate();
+          md5.getBytes(keyseed);
+          memcpy(k.hash, keyseed, 16);
           k.type = PKT_AUTH;
           send_udp(wudp.remoteIP(), wudp.remotePort(), k);
           settimeout(authtimer);
@@ -478,13 +480,15 @@ void process_incoming_packet(void)
         {
         /* Receive challenge from server */
         case PKT_SYN:
+          uint8_t buff[16];
           MD5Builder md5;
           md5.begin();
           md5.add(server_name);
-          md5.add(String(k.seed));
+          md5.add(k.hash, 16);
           md5.add(keyer_passwd);
           md5.calculate();
-          md5.getBytes(k.hash);
+          md5.getBytes(buff);
+          memcpy(k.hash, buff, 16);
           k.type = PKT_AUTH;
           send_udp(keying_server, keying_server_port, k);
           settimeout(authtimer);
@@ -508,7 +512,7 @@ void process_incoming_packet(void)
           MD5Builder md5;
           md5.begin();
           md5.add(keyer_name);
-          md5.add(String(keyseed));
+          md5.add(keyseed, 16);
           md5.add(keyer_passwd);
           md5.calculate();
           md5.getBytes(buff);
@@ -541,15 +545,18 @@ void process_incoming_packet(void)
         {
           /* Receive challenge from server */
         case PKT_AUTH:
+          uint8_t buff[16];
           MD5Builder md5;
           md5.begin();
           md5.add(server_name);
-          md5.add(String(k.seed));
+          md5.add(k.hash, 16);
           md5.add(keyer_passwd);
           md5.calculate();
-          md5.getBytes(k.hash);
+          md5.getBytes(buff);
+          memcpy(k.hash, buff, 16);
           k.type = PKT_AUTH;
           send_udp(keying_server, keying_server_port, k);
+          debug_sem("send", k);
           break;
 
           /* Success server authentication */
@@ -678,107 +685,6 @@ void toggleKeyEdge(DotDash &d)
   {
     mark();
     settimeout(marktimeout);
-  }
-}
-
-IRAM_ATTR void toggleKeyTimeISR(void);
-
-static hw_timer_t *key_timer = NULL;
-
-void init_timer()
-{
-  key_timer = timerBegin(0, 80, true);
-  timerAttachInterrupt(key_timer, &toggleKeyTimeISR, true);
-}
-
-void set_timer(int d)
-{
-  if (d != 0)
-    timerAlarmWrite(key_timer, 1000 * d, false);
-  else
-    timerAlarmWrite(key_timer, 1, false);
-  timerAlarmEnable(key_timer);
-}
-
-void toggleKeyTimeLoop()
-{
-  unsigned long now = millis();
-
-  if (keystate == NONE &&
-      (queue.length() > symbolwait || (now - lastqueued) > (long_mark + space_duration) * queuelatency))
-  {
-    Serial.println(keystate);
-    set_timer(0);
-  }
-}
-
-IRAM_ATTR void toggleKeyTimeISR()
-{
-  DotDash d;
-  unsigned long now = millis();
-  volatile static unsigned long duration, startperiod;
-  volatile static unsigned long prev_t, prev_d;
-  boolean isempty;
-
-  isempty = queue.isEmpty();
-
-  if (!isempty)
-    queue.dequeue(d);
-
-  switch (keystate)
-  {
-  case NONE:
-    if (isempty)
-      return;
-
-    if (d.data == RISE_EDGE)
-    {
-      long_mark = 0;
-      short_mark = MAX_MARK_DURATION;
-      prev_t = d.t;
-      duration = d.d;
-      if (duration > MAX_MARK_DURATION)
-      {
-        keystate = NONE;
-        return;
-      }
-      set_timer(duration);
-      keystate = MARK;
-      mark();
-      return;
-    };
-    break;
-
-  case MARK:
-    space();
-    if (isempty)
-    {
-      keystate = NONE;
-      return;
-    }
-    if (d.data == RISE_EDGE)
-    {
-      duration = d.t - d.d - prev_t;
-      space_duration = duration;
-      if (duration > MAX_MARK_DURATION)
-      {
-        keystate = NONE;
-        return;
-      }
-      prev_t = d.t;
-      prev_d = d.d;
-
-      set_timer(duration);
-      keystate = SPACE;
-    };
-    break;
-
-  case SPACE:
-    duration = prev_d;
-    keystate = MARK;
-    set_timer(duration);
-    mark();
-    break;
   }
 }
 
@@ -913,21 +819,6 @@ void handle_code(PktType t, DotDash &d)
   }
 }
 
-void handleWiFiEvent(WiFiEvent_t event)
-{
-  switch (event)
-  {
-  case SYSTEM_EVENT_STA_GOT_IP:
-    Serial.print("WiFi Connected IP Address:");
-    Serial.println(WiFi.localIP());
-    break;
-  case SYSTEM_EVENT_STA_DISCONNECTED:
-    connected = false;
-    Serial.println("WiFi Lost Connection...");
-    break;
-  }
-}
-
 boolean hostByString(const char *host, IPAddress &ip)
 {
   IPAddress myip;
@@ -944,6 +835,21 @@ boolean hostByString(const char *host, IPAddress &ip)
   }
   else
     return false;
+}
+
+void handleWiFiEvent(WiFiEvent_t event)
+{
+  switch (event)
+  {
+  case SYSTEM_EVENT_STA_GOT_IP:
+    Serial.print("WiFi Connected IP Address:");
+    Serial.println(WiFi.localIP());
+    break;
+  case SYSTEM_EVENT_STA_DISCONNECTED:
+    connected = false;
+    Serial.println("WiFi Lost Connection...");
+    break;
+  }
 }
 
 void wifi_setup()
@@ -984,13 +890,9 @@ void wifi_setup()
         Serial.println("Connecting to AP...");
       }
       MDNS.begin(keyer_name);
-      Serial.println("Connected.");
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
     }
 
     wudp.begin(keyer_local_port);
-
     pkt_error = 0;
     Serial.println("Keyer server ready");
   }
@@ -1021,9 +923,6 @@ void wifi_setup()
         delay(500);
         Serial.println("Connecting to AP...");
       }
-      Serial.println("Connected.");
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
 
       MDNS.begin(client_name);
       localip = MDNS.queryHost(server_name);
@@ -1037,7 +936,7 @@ void wifi_setup()
       {
         if (hostByString(keyer_global, localip))
         {
-          Serial.println("Connect global keying server at " + localip.toString());
+          Serial.println("No local keying server.");
           keying_server = localip;
           keying_server_port = keyer_global_port;
         }
@@ -1103,9 +1002,6 @@ void setup()
   stableperiod = 0;
   key_changed = false;
   initISRqueue();
-#ifdef USE_ISR
-  init_timer();
-#endif
 }
 
 void start_auth()
@@ -1151,11 +1047,7 @@ void loop()
         }
         else
         {
-#ifdef USE_ISR
-          toggleKeyTimeLoop();
-#else
           toggleKeyTime();
-#endif
         }
         break;
       }
@@ -1168,7 +1060,7 @@ void loop()
       case KEYER_WAIT:
         if (key_changed)
           start_auth();
-        httpServer.handleClient();
+
         break;
 
       case KEYER_ACTIVE:
