@@ -11,8 +11,8 @@ const char *ap_passwd = "wifikey32";
 
 /* for WiFi Station  */
 const char *ssid[] = {
-    "SSID1",
-    "SSID2",
+    "YOURSSID1",
+    "YOURSSID2",
     NULL};
 const char *passwd[] = {
     "PASSWD1",
