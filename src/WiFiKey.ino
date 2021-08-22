@@ -1,11 +1,26 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WebServer.h>
+#include <SPIFFS.h>
+#include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <MD5Builder.h>
+#include "config_settings.h"
+#include "ringqueue.h"
 
 #define DEBUG_LEVEL 1
 #define DROPPKT 0
+
+/* Session Parameters */
+#define WIFITIMEOUT 8000    /* WiFi AP connection time out */
+#define KEEPALIVE 15000     /* Send keep-alive to server every 15sec */
+#define AUTHTIMEOUT 5000    /* Authentication timeout (5sec) */
+#define IDLETIMEOUT 1800000 /* Idle timeout (30min)  */
+
+/* Packet Type & Queue params. */
+#define SYMBOLWAIT 4           /* Wait four symbol */
+#define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
+#define MAX_MARK_DURATION 5000 /* Maximum MARK duration */
 
 /* GPIO setting */
 const uint8_t gpio_key = 14;   /* from Keyer */
@@ -14,29 +29,34 @@ const uint8_t gpio_pkcfg = 12; /* Packet Type H = Duration and Time, L = Edge */
 const uint8_t gpio_led = 26;   /* to LED */
 const uint8_t gpio_out = 27;   /* to Photocoupler */
 
-/* Packet Type & Queue params. */
-#define SYMBOLWAIT 4           /* Wait four symbol */
-#define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
-#define MAX_MARK_DURATION 5000 /* Maximum MARK duration */
+/* WiFi & IP Address Configrations */
+/* Keyer ID and password */
+char keyer_name[64];
+char keyer_passwd[64];
+char server_name[64];
 
-/* WiFi and IP Address configrations */
-#include "config_wifi.h"
+/* for WiFi Station  */
+char ssid[2][64];
+char passwd[2][64];
 
-/* Session Parameters */
-#define WIFITIMEOUT 8000    /* WiFi AP connection time out */
-#define KEEPALIVE 15000     /* Send keep-alive to server every 15sec */
-#define AUTHTIMEOUT 5000    /* Authentication timeout (5sec) */
-#define IDLETIMEOUT 1800000 /* Idle timeout (30min)  */
+/* IP Addresses */
+/* Standalone */
+IPAddress ap_server(192, 168, 4, 1);
+IPAddress ap_client(192, 168, 4, 2);
+IPAddress ap_subnet(255, 255, 255, 0);
 
-/* Simple Ring Buffer */
-#include "ringqueue.h"
+/* Server global address */
+char keyer_global[64];
+int keyer_global_port;
+/* Server local port */
+char keyer_local[64];
+int keyer_local_port;
 
-/* Global variables */
 IPAddress keying_server;
 int keying_server_port;
-
 IPAddress authsender;
 int authport;
+
 unsigned int symbolwait = SYMBOLWAIT;
 unsigned int queuelatency = QLATENCY;
 boolean server_mode;
@@ -44,6 +64,9 @@ boolean ap_mode;
 boolean udp_send_edge;
 boolean connected;
 boolean forbidden_reset_outside = false;
+
+DynamicJsonDocument config(1024);
+KeyConfig configfile = KeyConfig(config);
 
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
@@ -97,18 +120,6 @@ struct KeyerPkt
   };
 };
 
-RingQueue<DotDash> queue = RingQueue<DotDash>();
-unsigned long lastqueued;
-
-/* ISR Stuff */
-#define STABLEPERIOD 5 /* Discard Interrupts 5msec */
-volatile EdgeType key_edge;
-volatile boolean key_changed;
-volatile unsigned long key_time, key_duration;
-volatile unsigned long stableperiod, lastmillis;
-
-void IRAM_ATTR keyIn(void);
-
 /* Server state */
 enum ServerState
 {
@@ -127,131 +138,17 @@ enum KeyState
 };
 int keystate;
 
-void handleRoot(void)
-{
-  String response, keyer;
-  String updated = "";
-  unsigned int param;
+RingQueue<DotDash> queue = RingQueue<DotDash>();
+unsigned long lastqueued;
 
-  if (httpServer.hasArg("queuelatency"))
-  {
-    param = httpServer.arg("queuelatency").toInt();
-    if ((param > 0) && (param <= 10) && (queuelatency != param))
-    {
-      queuelatency = param;
-      pkt_error = 0;
-      prev_seq = 0;
-      updated = "<p> Parameter updated.</p>";
-    }
-  }
+/* ISR Stuff */
+#define STABLEPERIOD 5 /* Discard Interrupts 5msec */
+volatile EdgeType key_edge;
+volatile boolean key_changed;
+volatile unsigned long key_time, key_duration;
+volatile unsigned long stableperiod, lastmillis;
 
-  if (httpServer.hasArg("symbolwait"))
-  {
-    param = httpServer.arg("symbolwait").toInt();
-    if ((param > 0) && (param <= 20) && (symbolwait != param))
-    {
-      symbolwait = param;
-      pkt_error = 0;
-      prev_seq = 0;
-      updated = "<p> Parameter updated.</p>";
-    }
-  }
-  if (server_mode)
-    keyer = "Server Address: ";
-  else
-    keyer = "Client Address: ";
-
-  keyer += WiFi.localIP().toString();
-
-  response =
-      "<!DOCTYPE html>"
-      "<html>"
-      "<head>"
-      " <meta charset=\"utf-8\">"
-      " <title> WiFiKey Parameter Configraton</title>"
-      "</head>"
-      "<body>"
-      "<p>WiFiKey Parameters </p><hr>"
-      "<p>" +
-      keyer +
-      "</p>"
-      "<iframe src=\"./stats.html\" width=\"320\" height=\"220\"></iframe>"
-      "<hr>"
-      "<form action=\"\" method=\"get\">"
-      "<p> Queue Latency:"
-      " <input type=\"textarea\" size=\"5\" name=\"queuelatency\" value=\"" +
-      String(queuelatency) +
-      "\">"
-      "<br>"
-      "Symbol Wait:"
-      " <input type=\"textarea\" size=\"5\" name=\"symbolwait\" value=\"" +
-      String(symbolwait) +
-      "\">"
-      "<br>"
-      "<input type=\"submit\" name=\"submit\" value=\"Set\"></p>"
-      "</form><hr>" +
-      updated + "</body></html>";
-
-  httpServer.send(200, "text/html", response);
-}
-
-void handleStats(void)
-{
-  String response, client;
-  float estimated_wpm = 0, estimated_ratio = 0;
-
-  if (short_mark > 0)
-  {
-    if (short_mark < MAX_MARK_DURATION)
-      estimated_wpm = 1200 / short_mark;
-    estimated_ratio = long_mark / short_mark;
-  }
-  short_mark = MAX_MARK_DURATION;
-
-  if (serverstate == KEYER_ACTIVE)
-    client = "Client: " + authsender.toString() + ":" + String(authport) + "<br>";
-  else
-    client = "";
-
-  response =
-      "<!DOCTYPE html>"
-      "<html>"
-      "<head>"
-      " <meta charset=\"utf-8\">"
-      " <meta http-equiv=\"Refresh\" content=\"3\">"
-      "</head>"
-      "<body><p>" +
-      client +
-      "Estimated Speed: " +
-      String(estimated_wpm, 0) +
-      " WPM<br>"
-      "Estimated Dash Dot Ratio: " +
-      String(estimated_ratio, 1) +
-      "<br>"
-      "Packet Error: " +
-      String(pkt_error) +
-      "<br>"
-      "Packet Delay: " +
-      String(pkt_delay) +
-      "<br>"
-      "Max queue length: " +
-      String(queue.maxLength()) +
-      "<br>"
-      "Max long mark duration: " +
-      String(long_mark) +
-      "ms<br>"
-      "Space duration: " +
-      String(space_duration) +
-      "ms<br></p>"
-      "</body></html>";
-  pkt_delay = 0;
-  httpServer.send(200, "text/html", response);
-}
-
-void handleNotFound(void)
-{
-  httpServer.send(404, "text/plain", "404 Not Found.");
-}
+void IRAM_ATTR keyIn(void);
 
 QueueHandle_t isrQueue;
 void initISRqueue(void)
@@ -594,7 +491,10 @@ void process_incoming_packet(void)
       /* Resend keying packets from client */
       case PKT_NACK:
         if (!server_mode)
+        {
+          pkt_error++;
           resend_code(keying_server, keying_server_port, k.data.seq);
+        }
         break;
 
       /* Connection closed by peer */
@@ -852,14 +752,172 @@ void handleWiFiEvent(WiFiEvent_t event)
   }
 }
 
+void handleRoot(void)
+{
+  String response, keyer, mode;
+  String updated = "";
+  unsigned int param;
+
+  keyer = keyer_name;
+  keyer += ".local (";
+  keyer += WiFi.localIP().toString() + ")";
+  if (server_mode)
+    mode = "Server";
+  else
+    mode = "Client";
+
+  response =
+      "<!DOCTYPE html>"
+      "<html>"
+      "<head>"
+      " <meta charset=\"utf-8\">"
+      " <title> WiFiKey</title>"
+      "</head>"
+      "<body bgcolor=\"#455a64\" text=\"#ffffff\">"
+      "<h3>WiFiKey</h3><hr>"
+      "<table>"
+      "<tr><td>Name:&nbsp</td><td>" +
+      keyer +
+      "</td></tr>"
+      "<tr><td>Mode:&nbsp</td><td>" +
+      mode +
+      "</td></tr>"
+      "</table><hr>"
+      "<iframe src=\"./stats.html\" width=\"320\" height=\"220\"></iframe>"
+      "<hr>"
+      "<button onclick=\"location.href='./settings.html'\">Settings</button>"
+      "</body></html>";
+  httpServer.send(200, "text/html", response);
+}
+
+void handleStats(void)
+{
+  String response, response_server, host;
+  float estimated_wpm = 0, estimated_ratio = 0;
+
+  if (short_mark > 0)
+  {
+    if (short_mark < MAX_MARK_DURATION)
+      estimated_wpm = 1200 / short_mark;
+    estimated_ratio = long_mark / short_mark;
+  }
+  short_mark = MAX_MARK_DURATION;
+
+  if (serverstate == KEYER_ACTIVE)
+  {
+    if (server_mode)
+      host = "Client: " + authsender.toString() + ":" + String(authport) + "<br>";
+    else
+    {
+      host = "Server: " + keying_server.toString() + ":" + String(keying_server_port) + "<br>";
+      long_mark = 0;
+    }
+  }
+  else
+    host = "";
+
+  response =
+      "<!DOCTYPE html>"
+      "<html>"
+      "<head>"
+      " <meta charset=\"utf-8\">"
+      " <meta http-equiv=\"Refresh\" content=\"3\">"
+      "</head>"
+      "<body bgcolor=\"#000000\" text=\"#ffffff\"><p>" +
+      host +
+      "Estimated Speed: " +
+      String(estimated_wpm, 0) +
+      " WPM<br>"
+      "Estimated Dash Dot Ratio: " +
+      String(estimated_ratio, 1) +
+      "<br>"
+      "Packet Error: " +
+      String(pkt_error) +
+      "<br>";
+
+  response_server =
+      "Packet Delay: " +
+      String(pkt_delay) +
+      "<br>"
+      "Max queue length: " +
+      String(queue.maxLength()) +
+      "<br>"
+      "Max long mark duration: " +
+      String(long_mark) +
+      "ms<br>"
+      "Space duration: " +
+      String(space_duration) +
+      "ms<br></p>"
+      "</body></html>";
+
+  pkt_delay = 0;
+
+  if (server_mode)
+    response += response_server;
+
+  httpServer.send(200, "text/html", response);
+}
+
+void handleSettings()
+{
+  if (httpServer.hasArg("method"))
+  {
+    String response;
+
+    serializeJson(config, response);
+    httpServer.send(200, "applicaton/json", response);
+  }
+
+  else if (httpServer.hasArg("reset"))
+  {
+    String response;
+
+    if (configfile.readFile("/config.json"))
+      configfile.savePrefs();
+    serializeJson(config, response);
+    httpServer.send(200, "applicaton/json", response);
+  }
+
+  else if (SPIFFS.exists("/settings.html"))
+  {
+    File file = SPIFFS.open("/settings.html", "r");
+
+    httpServer.streamFile(file, "text/html");
+    file.close();
+  }
+
+  else
+    Serial.println("File not found");
+}
+
+void handleSettingsPost(void)
+{
+  String response;
+
+  response = httpServer.arg("plain");
+  DeserializationError error = deserializeJson(config, response);
+  if (error)
+  {
+    Serial.println("Bad Response:" + response);
+  }
+  else
+  {
+    configfile.savePrefs();
+  }
+
+  response = "";
+  serializeJson(config, response);
+  httpServer.send(200, "application/json", response);
+}
+
+void handleNotFound()
+{
+  httpServer.send(404, "text/plain", "404 Not Found.");
+}
+
 void wifi_setup()
 {
   IPAddress localip;
-  String cname(keyer_name);
-  char client_name[128];
-
-  cname += "-client";
-  cname.toCharArray(client_name, 128);
 
   connected = false;
   digitalWrite(gpio_led, HIGH);
@@ -872,7 +930,7 @@ void wifi_setup()
     if (ap_mode)
     {
       WiFi.mode(WIFI_AP);
-      WiFi.softAP(ap_ssid, ap_passwd);
+      WiFi.softAP(ssid[0], passwd[0]);
       delay(100);
       WiFi.softAPConfig(ap_server, ap_server, ap_subnet);
       Serial.print("Access point address: ");
@@ -880,7 +938,7 @@ void wifi_setup()
     }
     else
     {
-      for (int i = 0; ssid[i] != NULL; i++)
+      for (int i = 0; i < 2; i++)
         wifiMulti.addAP(ssid[i], passwd[i]);
 
       while (wifiMulti.run(WIFITIMEOUT) != WL_CONNECTED)
@@ -904,7 +962,7 @@ void wifi_setup()
       WiFi.config(ap_client, ap_server, ap_subnet);
       keying_server = ap_server;
       keying_server_port = keyer_local_port;
-      WiFi.begin(ap_ssid, ap_passwd);
+      WiFi.begin(ssid[0], passwd[0]);
       while (WiFi.status() != WL_CONNECTED)
       {
         delay(500);
@@ -914,7 +972,7 @@ void wifi_setup()
     }
     else
     {
-      for (int i = 0; ssid[i] != NULL; i++)
+      for (int i = 0; i < 2; i++)
         wifiMulti.addAP(ssid[i], passwd[i]);
 
       while (wifiMulti.run(WIFITIMEOUT) != WL_CONNECTED)
@@ -924,7 +982,7 @@ void wifi_setup()
         Serial.println("Connecting to AP...");
       }
 
-      MDNS.begin(client_name);
+      MDNS.begin(keyer_name);
       localip = MDNS.queryHost(server_name);
       if (localip != IPAddress(0, 0, 0, 0))
       {
@@ -946,13 +1004,68 @@ void wifi_setup()
       Serial.println(keying_server.toString() + ":" + String(keying_server_port));
     }
   }
+
   httpServer.on("/", handleRoot);
   httpServer.on("/stats.html", handleStats);
+  httpServer.on("/settings.html", HTTP_GET, handleSettings);
+  httpServer.on("/settings.html", HTTP_POST, handleSettingsPost);
   httpServer.onNotFound(handleNotFound);
+
   httpServer.begin();
 
   connected = true;
   digitalWrite(gpio_led, LOW);
+}
+
+#define _strcpy(x, y) strlcpy(x, y, sizeof(x))
+void load_config()
+{
+  if (!SPIFFS.begin(true))
+  {
+    Serial.println("An Error has occurred while mounting SPIFFS");
+  }
+
+  if (!configfile.loadPrefs() &&
+      !configfile.readFile("/config.json"))
+  {
+    Serial.println("No Configration files.");
+    while (1)
+      delay(1000);
+  }
+
+  _strcpy(keyer_name, config["keyername"]);
+  _strcpy(keyer_passwd, config["keyerpasswd"]);
+
+  if (strcmp(config["servermode"], "%checked%") == 0)
+    server_mode = true;
+  else
+    server_mode = false;
+
+  _strcpy(server_name, config["servername"]);
+
+  if (strcmp(config["wifistn"], "%checked%") == 0)
+    ap_mode = false;
+  else
+    ap_mode = true;
+
+  _strcpy(ssid[0], config["SSID1"]);
+  _strcpy(ssid[1], config["SSID2"]);
+  _strcpy(passwd[0], config["passwd1"]);
+  _strcpy(passwd[1], config["passwd2"]);
+
+  if (strcmp(config["pkttypetime"], "%checked%") == 0)
+    udp_send_edge = false;
+  else
+    udp_send_edge = true;
+
+  _strcpy(keyer_local, config["localaddr"]);
+  keyer_local_port = config["localport"];
+
+  _strcpy(keyer_global, config["globaladdr"]);
+  keyer_global_port = config["globalport"];
+
+  queuelatency = config["latency"];
+  symbolwait = config["symbol"];
 }
 
 void setup()
@@ -970,27 +1083,11 @@ void setup()
 
   connected = false;
 
-  if (digitalRead(gpio_key) == HIGH)
-  {
-    server_mode = false;
-    attachInterrupt(gpio_key, keyIn, CHANGE);
-  }
-  else
-  {
-    server_mode = true;
-  }
-
-  if (digitalRead(gpio_apcfg) == HIGH)
-    ap_mode = false;
-  else
-    ap_mode = true;
-
-  if (digitalRead(gpio_pkcfg) == HIGH)
-    udp_send_edge = false;
-  else
-    udp_send_edge = true;
-
+  load_config();
   wifi_setup();
+
+  if (!server_mode)
+    attachInterrupt(gpio_key, keyIn, CHANGE);
 
   clear_udp_buffer();
   keystate = NONE;
@@ -1060,13 +1157,17 @@ void loop()
       case KEYER_WAIT:
         if (key_changed)
           start_auth();
-
         break;
 
       case KEYER_ACTIVE:
         DotDash d;
         if (dequeueISR(d))
         {
+          if (d.d > long_mark)
+            long_mark = d.d;
+          if ((d.d > 0) && (d.d < short_mark))
+            short_mark = d.d;
+
           send_code(keying_server, keying_server_port, d);
           settimeout(keepalivetimer);
         };

@@ -1,0 +1,18 @@
+{
+    "keyername": "wifikey",
+    "keyerpasswd":"passwd",
+    "servermode":"%checked%",
+    "servername":"wifikey",
+    "wifistn": "%checked%",
+    "SSID1" : "YOURSSID1",
+    "passwd1" : "YOURPASSWD1",
+    "SSID2": "YOURSSID2",
+    "passwd2": "YOURPASSWD2",
+    "pkttypetime":"%checked%",
+    "localaddr":"192.168.1.192",
+    "localport": 56000,
+    "globaladdr":"192.168.1.192",
+    "globalport":56001,
+    "latency": 2,
+    "symbol" : 4
+}

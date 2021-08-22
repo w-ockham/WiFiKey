@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>WiFiKey Settings</title>
+    <style>
+        .spinner {
+            width: 32px;
+            height: 32px;
+            position: absolute;
+            left: 250px;
+            top: 250px;
+            margin: 10px auto;
+            border: 4px #ddd solid;
+            border-top: 4px #2e93e6 solid;
+            border-radius: 50%;
+            animation: sp-anime 1.0s infinite linear;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 100;
+            width: 100%;
+            height: 100%;
+            display: none;
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        @keyframes sp-anime {
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body bgcolor="#455a64" text="#ffffff">
+    <script>
+        var jsondata = {}
+
+        function enabletext(target, checked) {
+            target.forEach(elem => {
+                document.getElementById(elem).disabled = !checked;
+            })
+        }
+
+        function validattionCheck(props) {
+            var result = true;
+            for (var item in props) {
+                if (document.getElementById(item).value == ""
+                    && document.getElementById(item).required
+                    && !document.getElementById(item).disabled) {
+                    alert("Value required for " + item);
+                    result = false;
+                } else if (document.getElementById(item).type == "password") {
+                    var p1 = document.getElementById(item).value;
+                    var p2 = document.getElementById(item + "-cnf").value;
+                    if (p1 != p2) {
+                        alert("Password Confirmation does not match. " + item + ":" + p1 + ":" + p2);
+                        result = false;
+                    }
+                }
+            }
+            return result;
+        }
+
+        function setProperties(jsondata) {
+            for (var item in jsondata) {
+                val = jsondata[item];
+                if (val == "%checked%") {
+                    document.getElementById(item).checked = true;
+                    document.getElementById(item).onchange();
+                    document.getElementById(item + "-neg").checked = false;
+                } if (val == "%notchecked%") {
+                    document.getElementById(item).checked = false;
+                    document.getElementById(item + "-neg").checked = true;
+                    document.getElementById(item + "-neg").onchange();
+                } else {
+                    if (document.getElementById(item).type == "password") {
+                        document.getElementById(item).value = val;
+                        document.getElementById(item + "-cnf").value = val;
+                    } else {
+                        document.getElementById(item).value = val;
+                    }
+                }
+            }
+        }
+
+        function spinner(flag) {
+            if (flag)
+                document.getElementById("overlay").style.display = 'block';
+            else
+                document.getElementById("overlay").style.display = 'none';
+        }
+
+        function Reset() {
+            var request = new XMLHttpRequest();
+            var url = location.href + "?reset=on";
+            if (confirm("Press OK to restore initial setteings.")) {
+                request.open('GET', url);
+                request.onreadystatechange = function () {
+                    if (request.readyState != 4) {
+                        // Sending request
+                    } else if (request.status != 200) {
+                        spinner(false);
+                        alert("Connection Failed " + location.href);
+                    } else {
+                        var res = request.responseText;
+                        spinner(false);
+                        jsondata = JSON.parse(res);
+                        setProperties(jsondata);
+                    }
+                };
+                request.send(null);
+            }
+        } 
+
+        function onLoad() {
+            var request = new XMLHttpRequest();
+            var url = location.href + "?method=get-properties";
+            spinner(true);
+            request.open('GET', url);
+            request.onreadystatechange = function () {
+                if (request.readyState != 4) {
+                    // Sending request
+                } else if (request.status != 200) {
+                    spinner(false);
+                    alert("Connection Failed " + location.href);
+                } else {
+                    var res = request.responseText;
+                    spinner(false);
+                    jsondata = JSON.parse(res);
+                    setProperties(jsondata);
+                }
+            };
+            request.send(null);
+        }
+
+        function onSave() {
+            var props = jsondata;
+            var newprop = {};
+            var result = true;
+
+            if (!validattionCheck(props)) {
+                result = false;
+            } else {
+                for (var item in props) {
+                    val = props[item];
+                    if (val == "%checked%" || val == "%notchecked") {
+                        if (document.getElementById(item).checked)
+                            newprop[item] = "%checked%";
+                        else
+                            newprop[item] = "%notchecked%";
+                    } else {
+                        newprop[item] = document.getElementById(item).value;
+                    }
+                }
+            }
+            if (result) {
+                var request = new XMLHttpRequest();
+                var url = location.href;
+                spinner(true);
+                request.open('POST', url);
+                request.onreadystatechange = function () {
+                    if (request.readyState != 4) {
+                        // Sending request
+                    } else if (request.status != 200) {
+                        spinner(false);
+                        alert("Connection Failed " + location.href);
+                    } else {
+                        var res = request.responseText;
+                        spinner(false);
+                        setProperties(JSON.parse(res));
+                        history.back();
+                    }
+                };
+                request.setRequestHeader('Content-Type', 'application/json');
+                data = JSON.stringify(newprop)
+                request.send(data);
+            }
+        }
+    </script>
+
+    <h3>WiFiKey Settings</h3>
+    <hr>
+    <div id="overlay" class="overlay">
+        <div class="spinner"></div>
+    </div>
+    <!----    <form id="preference"> -->
+    <b>Keyer</b>
+    <table>
+        <tr>
+            <td>Name</td>
+            <td><input type="text" id="keyername" value="" required>.local</td>
+        </tr>
+        <tr>
+            <td>Password</td>
+            <td><input type="password" id="keyerpasswd" value="" required></td>
+            <td>Retype</td>
+            <td><input type="password" id="keyerpasswd-cnf" value="" required></td>
+        </tr>
+        <tr>
+            <td>Mode</td>
+            <td><input type="radio" id="servermode" name="servermode" value="server"
+                    onchange="enabletext(['servername'],!this.checked);">Server
+                <input type="radio" id="servermode-neg" name="servermode" value="client"
+                    onchange="enabletext(['servername'],this.checked);">Client
+            </td>
+        </tr>
+        <tr>
+            <td>Server Name</td>
+            <td><input type="text" id="servername" value="" disabled required>.local
+            </td>
+        </tr>
+    </table>
+    <hr>
+    <b>Network</b>
+    <table>
+        <tr>
+            <td>WiFi</td>
+            <td><input type="radio" id="wifistn" name="wifistn" value="station" onchange="enabletext(['globaladdr','globalport','SSID2','passwd2','passwd2-cnf'],this.checked);
+                    enabletext(['localaddr'],!this.checked)">Station
+                <input type="radio" id="wifistn-neg" name="wifistn" value="ap" onchange="enabletext(['globaladdr','globalport','localaddr','SSID2','passwd2','passwd2-cnf'],!this.checked)
+                    enabletext(['localaddr'],this.checked)">Access Point
+            </td>
+        </tr>
+        <tr>
+            <td>1.&nbspSSID</td>
+            <td><input type="text" id="SSID1" value="" required></td>
+            <td>Password</td>
+            <td><input type="password" id="passwd1" value="" required></td>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>Retype</td>
+            <td><input type="password" id="passwd1-cnf" value="" required></td>
+        </tr>
+        <tr>
+            <td>2.&nbspSSID</td>
+            <td><input type="text" id="SSID2" value=""></td>
+            <td>Password</td>
+            <td><input type="password" id="passwd2" value=""></td>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>Retype</td>
+            <td><input type="password" id="passwd2-cnf" value=""></td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>Packet</td>
+            <td><input type="radio" id="pkttypetime" name="pkttype" value="time" onchange="">Time
+                <input type="radio" id="pkttypetime-neg" name="pkttype" value="edge" onchange="">Edge
+            </td>
+        </tr>
+        <tr>
+            <td>Local</td>
+            <td><input type="text" id="localaddr" name="localaddr" value="" disabled> :
+                <input type="text" pattern="[0-9]+" title="Decimal number required" id="localport" name="localport"
+                    value="" size="5" maxlength="5">
+            </td>
+        </tr>
+        <tr>
+            <td>Global</td>
+            <td><input type="text" id="globaladdr" name="globaladdr" value=""> :
+                <input type="text" pattern="[0-9]+" title="Decimal number required" id="globalport" name="globalport"
+                    value="" size="5" maxlength="5">
+            </td>
+        </tr>
+        <tr>
+            <td>Latency</td>
+            <td>
+                <input type="text" pattern="[0-9]+" title="Decimal number required" id="latency" name="latency" value=""
+                    size="2" maxlength="2">
+            </td>
+        </tr>
+        <tr>
+            <td>Symbol</td>
+            <td>
+                <input type="text" pattern="[0-9]+" title="Decimal number required" id="symbol" name="symbol" value=""
+                    size="2" maxlength="2">
+            </td>
+        </tr>
+    </table>
+    <hr>
+    <button onclick="onSave()">Save </button>
+    <button onclick="onLoad()">Reset</button>
+    <!--- </form> --->
+    <button onclick="history.back()">Cancel</button>
+    &nbsp&nbsp&nbsp<button onclick="Reset()">Initialize</button>
+    <script>
+        window.onload = onLoad();
+    </script>
+</body>
+
+</html>
