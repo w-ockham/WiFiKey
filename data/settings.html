@@ -59,7 +59,7 @@
                     var p1 = document.getElementById(item).value;
                     var p2 = document.getElementById(item + "-cnf").value;
                     if (p1 != p2) {
-                        alert("Password Confirmation does not match. " + item + ":" + p1 + ":" + p2);
+                        alert("Password Confirmation does not match. " + item);
                         result = false;
                     }
                 }
@@ -116,7 +116,7 @@
                 };
                 request.send(null);
             }
-        } 
+        }
 
         function onLoad() {
             var request = new XMLHttpRequest();
@@ -149,7 +149,7 @@
             } else {
                 for (var item in props) {
                     val = props[item];
-                    if (val == "%checked%" || val == "%notchecked") {
+                    if (val == "%checked%" || val == "%notchecked%") {
                         if (document.getElementById(item).checked)
                             newprop[item] = "%checked%";
                         else
@@ -189,7 +189,6 @@
     <div id="overlay" class="overlay">
         <div class="spinner"></div>
     </div>
-    <!----    <form id="preference"> -->
     <b>Keyer</b>
     <table>
         <tr>
@@ -291,9 +290,9 @@
     <hr>
     <button onclick="onSave()">Save </button>
     <button onclick="onLoad()">Reset</button>
-    <!--- </form> --->
     <button onclick="history.back()">Cancel</button>
-    &nbsp&nbsp&nbsp<button onclick="Reset()">Initialize</button>
+    &nbsp&nbsp&nbsp
+    <button onclick="Reset()">Initialize</button>
     <script>
         window.onload = onLoad();
     </script>
