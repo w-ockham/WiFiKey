@@ -39,18 +39,24 @@
 
 <body bgcolor="#455a64" text="#ffffff">
     <script>
-        var jsondata = {}
+        var json_version = "";
+        var jsondata = {};
 
         function enabletext(target, checked) {
             target.forEach(elem => {
-                document.getElementById(elem).disabled = !checked;
+                var target = document.getElementById(elem);
+                target.disabled = !checked;
+                if (target.type == "password")
+                    document.getElementById(elem + "-cnf").disabled = !checked;
             })
         }
 
         function validattionCheck(props) {
             var result = true;
             for (var item in props) {
-                if (document.getElementById(item).value == ""
+                if (item == "version") {
+                    continue;
+                } else if (document.getElementById(item).value == ""
                     && document.getElementById(item).required
                     && !document.getElementById(item).disabled) {
                     alert("Value required for " + item);
@@ -70,11 +76,13 @@
         function setProperties(jsondata) {
             for (var item in jsondata) {
                 val = jsondata[item];
-                if (val == "%checked%") {
+                if (item == "version") {
+                    json_version = val;
+                } else if (val == "%checked%") {
                     document.getElementById(item).checked = true;
                     document.getElementById(item).onchange();
                     document.getElementById(item + "-neg").checked = false;
-                } if (val == "%notchecked%") {
+                } else if (val == "%notchecked%") {
                     document.getElementById(item).checked = false;
                     document.getElementById(item + "-neg").checked = true;
                     document.getElementById(item + "-neg").onchange();
@@ -149,7 +157,9 @@
             } else {
                 for (var item in props) {
                     val = props[item];
-                    if (val == "%checked%" || val == "%notchecked%") {
+                    if (item == "version") {
+                        newprop[item] = val;
+                    } else if (val == "%checked%" || val == "%notchecked%") {
                         if (document.getElementById(item).checked)
                             newprop[item] = "%checked%";
                         else
@@ -211,7 +221,7 @@
         </tr>
         <tr>
             <td>Server Name</td>
-            <td><input type="text" id="servername" value="" disabled required>.local
+            <td><input type="text" id="servername" value="" required>.local
             </td>
         </tr>
     </table>
@@ -220,12 +230,15 @@
     <table>
         <tr>
             <td>WiFi</td>
-            <td><input type="radio" id="wifistn" name="wifistn" value="station" onchange="enabletext(['globaladdr','globalport','SSID2','passwd2','passwd2-cnf'],this.checked);
-                    enabletext(['localaddr'],!this.checked)">Station
-                <input type="radio" id="wifistn-neg" name="wifistn" value="ap" onchange="enabletext(['globaladdr','globalport','localaddr','SSID2','passwd2','passwd2-cnf'],!this.checked)
-                    enabletext(['localaddr'],this.checked)">Access Point
+            <td><input type="radio" id="wifistn" name="wifistn" value="station" onchange="enabletext(['globaladdr','globalport','SSID1','passwd1','SSID2','passwd2','SSID3','passwd3'],this.checked);
+                        enabletext(['localaddr','APSSID','passwdap'],!this.checked)">Station
+                <input type="radio" id="wifistn-neg" name="wifistn" value="ap" onchange="enabletext(['globaladdr','globalport','SSID1','passwd1','SSID2','passwd2','SSID3','passwd3'],!this.checked)
+                    enabletext(['localaddr','APSSID','passwdap'],this.checked)">Access Point
             </td>
         </tr>
+    </table>
+    <u>Station</u>
+    <table>
         <tr>
             <td>1.&nbspSSID</td>
             <td><input type="text" id="SSID1" value="" required></td>
@@ -250,26 +263,58 @@
             <td>Retype</td>
             <td><input type="password" id="passwd2-cnf" value=""></td>
         </tr>
+        <tr>
+            <td>3.&nbspSSID</td>
+            <td><input type="text" id="SSID3" value=""></td>
+            <td>Password</td>
+            <td><input type="password" id="passwd3" value=""></td>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>Retype</td>
+            <td><input type="password" id="passwd3-cnf" value=""></td>
+        </tr>
     </table>
+    <u>Access Point</u>
+    <table>
+        <tr>
+            <td>1.&nbspSSID</td>
+            <td><input type="text" id="APSSID" value=""></td>
+            <td>Password</td>
+            <td><input type="password" id="passwdap" value=""></td>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>Retype</td>
+            <td><input type="password" id="passwdap-cnf" value=""></td>
+        </tr>
+    </table>
+    <u>Server Address</u>
+    <table>
+        <tr>
+            <td>Local</td>
+            <td><input type="text" id="localaddr" name="localaddr" value=""> :
+                <input type="text" pattern="[0-9]+" title="Decimal number required" id="localport" name="localport"
+                    value="" size="5" maxlength="5">
+            </td>
+        </tr>
+
+        <td>Global</td>
+        <td><input type="text" id="globaladdr" name="globaladdr" value=""> :
+            <input type="text" pattern="[0-9]+" title="Decimal number required" id="globalport" name="globalport"
+                value="" size="5" maxlength="5">
+        </td>
+        </tr>
+    </table>
+    <br>
+    <u>Keyer Parameters</u>
     <table>
         <tr>
             <td>Packet</td>
             <td><input type="radio" id="pkttypetime" name="pkttype" value="time" onchange="">Time
                 <input type="radio" id="pkttypetime-neg" name="pkttype" value="edge" onchange="">Edge
-            </td>
-        </tr>
-        <tr>
-            <td>Local</td>
-            <td><input type="text" id="localaddr" name="localaddr" value="" disabled> :
-                <input type="text" pattern="[0-9]+" title="Decimal number required" id="localport" name="localport"
-                    value="" size="5" maxlength="5">
-            </td>
-        </tr>
-        <tr>
-            <td>Global</td>
-            <td><input type="text" id="globaladdr" name="globaladdr" value=""> :
-                <input type="text" pattern="[0-9]+" title="Decimal number required" id="globalport" name="globalport"
-                    value="" size="5" maxlength="5">
             </td>
         </tr>
         <tr>

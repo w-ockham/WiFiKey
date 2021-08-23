@@ -5,11 +5,12 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <MD5Builder.h>
-#include "config_settings.h"
-#include "ringqueue.h"
 
 #define DEBUG_LEVEL 1
 #define DROPPKT 0
+
+#include "config_settings.h"
+#include "ringqueue.h"
 
 /* Session Parameters */
 #define WIFITIMEOUT 8000    /* WiFi AP connection time out */
@@ -36,19 +37,19 @@ char keyer_passwd[64];
 char server_name[64];
 
 /* for WiFi Station  */
-char ssid[2][64];
-char passwd[2][64];
+#define MAXSSID 3
+char ssid[MAXSSID][64];
+char passwd[MAXSSID][64];
 
-/* IP Addresses */
-/* Standalone */
-IPAddress ap_server(192, 168, 4, 1);
-IPAddress ap_client(192, 168, 4, 2);
-IPAddress ap_subnet(255, 255, 255, 0);
+/* for WiFi Access point */
+char ap_ssid[64];
+char ap_passwd[64];
 
-/* Server global address */
+/* Server global address & port */
 char keyer_global[64];
 int keyer_global_port;
-/* Server local port */
+
+/* Server/client local address & port */
 char keyer_local[64];
 int keyer_local_port;
 
@@ -719,24 +720,6 @@ void handle_code(PktType t, DotDash &d)
   }
 }
 
-boolean hostByString(const char *host, IPAddress &ip)
-{
-  IPAddress myip;
-
-  if (WiFiGenericClass::hostByName(host, myip))
-  {
-    ip = myip;
-    return true;
-  }
-  else if (myip.fromString(host))
-  {
-    ip = myip;
-    return true;
-  }
-  else
-    return false;
-}
-
 void handleWiFiEvent(WiFiEvent_t event)
 {
   switch (event)
@@ -858,6 +841,8 @@ void handleStats(void)
   httpServer.send(200, "text/html", response);
 }
 
+void update_config(void);
+
 void handleSettings()
 {
   if (httpServer.hasArg("method"))
@@ -903,8 +888,8 @@ void handleSettingsPost(void)
   else
   {
     configfile.savePrefs();
+    update_config();
   }
-
   response = "";
   serializeJson(config, response);
   httpServer.send(200, "application/json", response);
@@ -913,6 +898,24 @@ void handleSettingsPost(void)
 void handleNotFound()
 {
   httpServer.send(404, "text/plain", "404 Not Found.");
+}
+
+boolean hostByString(const char *host, IPAddress &ip)
+{
+  IPAddress myip;
+
+  if (WiFiGenericClass::hostByName(host, myip))
+  {
+    ip = myip;
+    return true;
+  }
+  else if (myip.fromString(host))
+  {
+    ip = myip;
+    return true;
+  }
+  else
+    return false;
 }
 
 void wifi_setup()
@@ -926,19 +929,26 @@ void wifi_setup()
   WiFi.onEvent(handleWiFiEvent);
 
   if (server_mode)
-  {
+  { /* Server side */
     if (ap_mode)
     {
       WiFi.mode(WIFI_AP);
-      WiFi.softAP(ssid[0], passwd[0]);
+      WiFi.softAP(ap_ssid, ap_passwd);
       delay(100);
-      WiFi.softAPConfig(ap_server, ap_server, ap_subnet);
+
+      if (!hostByString(keyer_local, localip))
+      {
+        Serial.println("Config error: Access Point IP");
+        while (1)
+          delay(1000);
+      }
+      WiFi.softAPConfig(localip, localip, IPAddress(255, 255, 255, 0)); /* Assume Class C */
       Serial.print("Access point address: ");
       Serial.println(WiFi.softAPIP());
     }
     else
     {
-      for (int i = 0; i < 2; i++)
+      for (int i = 0; i < MAXSSID; i++)
         wifiMulti.addAP(ssid[i], passwd[i]);
 
       while (wifiMulti.run(WIFITIMEOUT) != WL_CONNECTED)
@@ -947,32 +957,45 @@ void wifi_setup()
         delay(500);
         Serial.println("Connecting to AP...");
       }
-      MDNS.begin(keyer_name);
     }
 
+    MDNS.begin(keyer_name);
     wudp.begin(keyer_local_port);
     pkt_error = 0;
     Serial.println("Keyer server ready");
   }
   else
-  {
+  { /* Client Side */
     if (ap_mode)
     {
-      WiFi.mode(WIFI_STA);
-      WiFi.config(ap_client, ap_server, ap_subnet);
-      keying_server = ap_server;
-      keying_server_port = keyer_local_port;
-      WiFi.begin(ssid[0], passwd[0]);
+      WiFi.begin(ap_ssid, ap_passwd);
       while (WiFi.status() != WL_CONNECTED)
       {
         delay(500);
         Serial.println("Connecting to standalone AP...");
       }
-      Serial.println("Connected.");
+
+      MDNS.begin(keyer_name);
+      localip = MDNS.queryHost(server_name);
+      if (localip != IPAddress(0, 0, 0, 0))
+      {
+        Serial.println("[mDNS] Found a local keying server at " + localip.toString());
+        keying_server = localip;
+        keying_server_port = keyer_local_port;
+      }
+      else
+      {
+        if (hostByString(keyer_local, localip))
+        {
+          Serial.println("No local server");
+          keying_server = localip;
+          keying_server_port = keyer_global_port;
+        }
+      }
     }
     else
     {
-      for (int i = 0; i < 2; i++)
+      for (int i = 0; i < MAXSSID; i++)
         wifiMulti.addAP(ssid[i], passwd[i]);
 
       while (wifiMulti.run(WIFITIMEOUT) != WL_CONNECTED)
@@ -986,7 +1009,7 @@ void wifi_setup()
       localip = MDNS.queryHost(server_name);
       if (localip != IPAddress(0, 0, 0, 0))
       {
-        Serial.println("Local keying server found at " + localip.toString());
+        Serial.println("[mDNS] Found a local keying server at " + localip.toString());
         keying_server = localip;
         keying_server_port = keyer_local_port;
       }
@@ -999,10 +1022,12 @@ void wifi_setup()
           keying_server_port = keyer_global_port;
         }
       }
-      wudp.begin(keyer_local_port);
-      Serial.print("Keyer client is ready to connet: ");
-      Serial.println(keying_server.toString() + ":" + String(keying_server_port));
     }
+
+    /* client side */
+    wudp.begin(keyer_local_port);
+    Serial.print("Keyer client is ready to connet: ");
+    Serial.println(keying_server.toString() + ":" + String(keying_server_port));
   }
 
   httpServer.on("/", handleRoot);
@@ -1018,17 +1043,12 @@ void wifi_setup()
 }
 
 #define _strcpy(x, y) strlcpy(x, y, sizeof(x))
+
 void load_config()
 {
-  if (!SPIFFS.begin(true))
+  if (!configfile.loadPrefs())
   {
-    Serial.println("An Error has occurred while mounting SPIFFS");
-  }
-
-  if (!configfile.loadPrefs() &&
-      !configfile.readFile("/config.json"))
-  {
-    Serial.println("No Configration files.");
+    Serial.println("NVM Configration Error.");
     while (1)
       delay(1000);
   }
@@ -1049,9 +1069,13 @@ void load_config()
     ap_mode = true;
 
   _strcpy(ssid[0], config["SSID1"]);
-  _strcpy(ssid[1], config["SSID2"]);
   _strcpy(passwd[0], config["passwd1"]);
+  _strcpy(ssid[1], config["SSID2"]);
   _strcpy(passwd[1], config["passwd2"]);
+  _strcpy(ssid[2], config["SSID3"]);
+  _strcpy(passwd[2], config["passwd3"]);
+  _strcpy(ap_ssid, config["APSSID"]);
+  _strcpy(ap_passwd, config["passwdap"]);
 
   if (strcmp(config["pkttypetime"], "%checked%") == 0)
     udp_send_edge = false;
@@ -1066,6 +1090,62 @@ void load_config()
 
   queuelatency = config["latency"];
   symbolwait = config["symbol"];
+}
+
+void update_config(void)
+{
+  if (strcmp(config["pkttypetime"], "%checked%") == 0)
+    udp_send_edge = false;
+  else
+    udp_send_edge = true;
+  queuelatency = config["latency"];
+  symbolwait = config["symbol"];
+}
+
+void config_sanitycheck()
+{
+  char nvm_version[64], file_version[64];
+
+  if (!SPIFFS.begin(true))
+  {
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    while (1)
+      delay(1000);
+  }
+  if (!configfile.readFile("/config.json"))
+  {
+    Serial.println("No Configration files");
+    while (1)
+      delay(1000);
+  }
+  if (!config.containsKey("version"))
+  {
+    Serial.println("Illegal configration format");
+    while (1)
+      delay(1000);
+  }
+  _strcpy(file_version, config["version"]);
+#if DEBUG_LEVEL > 1
+  Serial.print("File version:");
+  Serial.println(file_version);
+#endif
+  nvm_version[0] = '\0';
+  if (configfile.loadPrefs())
+  {
+    if (config.containsKey("version"))
+      _strcpy(nvm_version, config["version"]);
+  }
+#if DEBUG_LEVEL > 1
+  Serial.print("NVM version:");
+  Serial.println(nvm_version);
+#endif
+  if (strcmp(nvm_version, file_version) != 0)
+  {
+    Serial.println("Obsolete NVM configration. Read new configration from config.json");
+    configfile.readFile("/config.json");
+    configfile.savePrefs();
+  }
+  load_config();
 }
 
 void setup()
@@ -1083,7 +1163,7 @@ void setup()
 
   connected = false;
 
-  load_config();
+  config_sanitycheck();
   wifi_setup();
 
   if (!server_mode)

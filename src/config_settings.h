@@ -10,8 +10,7 @@ private:
     const char *key_wifikey = "settings";
 
 public:
-    KeyConfig(DynamicJsonDocument &d) : json_prefs(d) {
-    };
+    KeyConfig(DynamicJsonDocument &d) : json_prefs(d){};
 
     ~KeyConfig(){};
 
@@ -32,7 +31,9 @@ public:
 
         begin();
         serializeJson(json_prefs, prefStr);
+#if DEBUG_LEVEL > 1
         Serial.println("Save Config:" + prefStr);
+#endif
         rs = prefs.putString(key_wifikey, prefStr);
         end();
         return rs;
@@ -52,7 +53,10 @@ public:
             return false;
         }
         deserializeJson(json_prefs, prefStr);
-        Serial.println("Load Config from NVM");
+#if DEBUG_LEVEL > 1
+        Serial.print("Load Config from NVM");
+        Serial.println(prefStr);
+#endif
         return true;
     }
 
