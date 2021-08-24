@@ -460,6 +460,7 @@ void process_incoming_packet(void)
             k.type = PKT_ACK;
             send_udp(authsender, authport, k);
             settimeout(idletimer);
+            pkt_error = 0;
             serverstate = KEYER_ACTIVE;
             debug_sem("send", k);
           }
@@ -497,6 +498,7 @@ void process_incoming_packet(void)
 
           /* Success server authentication */
         case PKT_ACK:
+          pkt_error = 0;
           serverstate = KEYER_ACTIVE;
           settimeout(keepalivetimer);
           break;
@@ -1147,6 +1149,7 @@ void update_config(void)
     udp_send_edge = true;
   queuelatency = config["latency"];
   symbolwait = config["symbol"];
+  pkt_error = 0;
 }
 
 void config_sanitycheck()
