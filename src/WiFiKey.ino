@@ -5,6 +5,11 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <MD5Builder.h>
+#include <FastLED.h>
+
+#ifdef ARDUINO_M5Stack_ATOM
+#define M5ATOM
+#endif
 
 #define DEBUG_LEVEL 1
 #define DROPPKT 0
@@ -24,11 +29,15 @@
 #define MAX_MARK_DURATION 5000 /* Maximum MARK duration */
 
 /* GPIO setting */
-const uint8_t gpio_key = 14;   /* from Keyer */
-const uint8_t gpio_apcfg = 25; /* WiFi mode H = via AP, L = Standalone AP */
-const uint8_t gpio_pkcfg = 12; /* Packet Type H = Duration and Time, L = Edge */
-const uint8_t gpio_led = 26;   /* to LED */
-const uint8_t gpio_out = 27;   /* to Photocoupler */
+#ifdef M5ATOM
+const uint8_t gpio_key = 19; /* from Keyer */
+const uint8_t gpio_led = 27; /* to LED */
+const uint8_t gpio_out = 23; /* to Photocoupler */
+#else
+const uint8_t gpio_key = 14; /* from Keyer */
+const uint8_t gpio_led = 26; /* to LED */
+const uint8_t gpio_out = 27; /* to Photocoupler */
+#endif
 
 /* WiFi & IP Address Configrations */
 /* Keyer ID and password */
@@ -138,6 +147,35 @@ enum KeyState
   SPACE
 };
 int keystate;
+
+/* Display LED */
+const CRGB redcolor = 0x00ff00;
+const CRGB blackcolor = 0x00000;
+const CRGB greencolor = 0xff0000;
+CRGB _ledbuffer[1];
+
+void init_led()
+{
+#ifdef M5ATOM
+  FastLED.addLeds<SK6812, gpio_led>(_ledbuffer, 1);
+  FastLED.setBrightness(20);
+#else
+  pinMode(gpio_led, OUTPUT);
+#endif
+}
+
+void set_led(CRGB color)
+{
+#ifdef M5ATOM
+  _ledbuffer[0] = color;
+  FastLED.show();
+#else
+  if (blackcolor != color)
+    digitalWrite(gpio_led, HIGH);
+  else
+    digitalWrite(gpio_led, LOW);
+#endif
+}
 
 RingQueue<DotDash> queue = RingQueue<DotDash>();
 unsigned long lastqueued;
@@ -564,13 +602,17 @@ void process_periodical()
 /* Toglle Key output */
 void mark()
 {
-  digitalWrite(gpio_led, HIGH);
+#ifndef M5ATOM
+  set_led(redcolor);
+#endif
   digitalWrite(gpio_out, HIGH);
 }
 
 void space()
 {
-  digitalWrite(gpio_led, LOW);
+#ifndef M5ATOM
+  set_led(blackcolor);
+#endif
   digitalWrite(gpio_out, LOW);
 }
 
@@ -757,7 +799,8 @@ void handleRoot(void)
       " <title> WiFiKey</title>"
       "</head>"
       "<body bgcolor=\"#455a64\" text=\"#ffffff\">"
-      "<h3>WiFiKey</h3><hr>"
+      "<h3>WiFiKey</h3>"
+      "<hr>"
       "<table>"
       "<tr><td>Name:&nbsp</td><td>" +
       keyer +
@@ -766,7 +809,7 @@ void handleRoot(void)
       mode +
       "</td></tr>"
       "</table><hr>"
-      "<iframe src=\"./stats.html\" width=\"320\" height=\"220\"></iframe>"
+      "<iframe src=\"./stats.html\" width=\"320\" height=\"240\"></iframe>"
       "<hr>"
       "<button onclick=\"location.href='./settings.html'\">Settings</button>"
       "</body></html>";
@@ -789,7 +832,11 @@ void handleStats(void)
   if (serverstate == KEYER_ACTIVE)
   {
     if (server_mode)
+    {
+      int remain = (IDLETIMEOUT - (millis() - idletimer)) / 60000;
       host = "Client: " + authsender.toString() + ":" + String(authport) + "<br>";
+      host += "Timeout: " + String(remain + 1) + " min<br>";
+    }
     else
     {
       host = "Server: " + keying_server.toString() + ":" + String(keying_server_port) + "<br>";
@@ -923,7 +970,7 @@ void wifi_setup()
   IPAddress localip;
 
   connected = false;
-  digitalWrite(gpio_led, HIGH);
+  set_led(greencolor);
 
   WiFi.disconnect(true, true);
   WiFi.onEvent(handleWiFiEvent);
@@ -1039,7 +1086,7 @@ void wifi_setup()
   httpServer.begin();
 
   connected = true;
-  digitalWrite(gpio_led, LOW);
+  set_led(blackcolor);
 }
 
 #define _strcpy(x, y) strlcpy(x, y, sizeof(x))
@@ -1153,13 +1200,10 @@ void setup()
   Serial.begin(115200);
 
   pinMode(gpio_out, OUTPUT);
-  pinMode(gpio_led, OUTPUT);
   pinMode(gpio_key, INPUT_PULLUP);
-  pinMode(gpio_apcfg, INPUT_PULLUP);
-  pinMode(gpio_pkcfg, INPUT_PULLUP);
 
   digitalWrite(gpio_out, LOW);
-  digitalWrite(gpio_led, LOW);
+  init_led();
 
   connected = false;
 
@@ -1258,10 +1302,12 @@ void loop()
       if (key_changed)
       {
         key_changed = false;
+#ifndef M5ATOM
         if (key_edge == RISE_EDGE)
-          digitalWrite(gpio_led, LOW);
+          set_led(blackcolor);
         else
-          digitalWrite(gpio_led, HIGH);
+          set_led(redcolor);
+#endif
       }
     }
   }
