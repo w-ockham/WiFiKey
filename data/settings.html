@@ -104,10 +104,21 @@
                 document.getElementById("overlay").style.display = 'none';
         }
 
-        function Reset() {
+        function Reboot(reboot) {
             var request = new XMLHttpRequest();
-            var url = location.href + "?reset=on";
-            if (confirm("Press OK to restore initial setteings.")) {
+            var url = location.href;
+            var rs;
+
+            if (reboot) {
+                url += "?reset=on";
+                rs = confirm("Press OK to reboot WiFiKey system.");
+            } else {
+                url += "?init=on";
+                rs = confirm("Press OK to restore initial settings.");
+            }
+
+            if (rs) {
+                spinner(true);
                 request.open('GET', url);
                 request.onreadystatechange = function () {
                     if (request.readyState != 4) {
@@ -116,19 +127,23 @@
                         spinner(false);
                         alert("Connection Failed " + location.href);
                     } else {
-                        var res = request.responseText;
+                        if (!reboot) {
+                            var res = request.responseText;
+                            jsondata = JSON.parse(res);
+                            setProperties(jsondata);
+                        }
                         spinner(false);
-                        jsondata = JSON.parse(res);
-                        setProperties(jsondata);
                     }
-                };
+                }
                 request.send(null);
+                if (reboot)
+                    window.location.href = "/";
             }
         }
 
         function onLoad() {
             var request = new XMLHttpRequest();
-            var url = location.href + "?method=get-properties";
+            var url = location.href + "?get-properties=all";
             spinner(true);
             request.open('GET', url);
             request.onreadystatechange = function () {
@@ -337,7 +352,8 @@
     <button onclick="onLoad()">Reset</button>
     <button onclick="history.back()">Cancel</button>
     &nbsp&nbsp&nbsp
-    <button onclick="Reset()">Initialize</button>
+    <button onclick="Reboot(false)">Restore</button>
+    <button onclick="Reboot(true)">REBOOT</button>
     <script>
         window.onload = onLoad();
     </script>

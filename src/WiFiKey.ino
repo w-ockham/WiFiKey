@@ -26,7 +26,7 @@
 /* Packet Type & Queue params. */
 #define SYMBOLWAIT 4           /* Wait four symbol */
 #define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
-#define MAX_MARK_DURATION 5000 /* Maximum MARK duration */
+#define MAX_MARK_DURATION 5000 /* Maximum MARK duration 5sec */
 
 /* GPIO setting */
 #ifdef M5ATOM
@@ -101,6 +101,7 @@ enum PktType
   PKT_NACK,
   PKT_CODE,
   PKT_CODE_RESENT,
+  PKT_CONF,
   PKT_SERIAL,
   PKT_SERIAL_RESENT
 };
@@ -147,6 +148,17 @@ enum KeyState
   SPACE
 };
 int keystate;
+
+/* Keyer error code */
+enum KeyError
+{
+  FAIL_NONE,
+  FAIL_AUTHFAIL,
+  FAIL_AUTHTIMEOUT,
+  FAIL_RESETPEER,
+  FAIL_DURATIONTOOLONG
+};
+int keyer_errno;
 
 /* Display LED */
 const CRGB redcolor = 0x00ff00;
@@ -274,6 +286,10 @@ void debug_sem(String mesg, KeyerPkt p)
     type = "RESENT";
     data = "duration=" + String(p.data.d) + " seq=" + String(p.data.seq);
     break;
+  case PKT_CONF:
+    type = "CONF";
+    data = "mode=" + String(p.data.data) + " latency=" + String(p.data.d) + " symbol=" + String(p.data.t);
+    break;
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
     break;
@@ -344,6 +360,34 @@ void send_nack(IPAddress recipient, int port, int seq)
   k.type = PKT_NACK;
   k.data.seq = seq;
   send_udp(recipient, port, k);
+}
+
+void send_config(IPAddress recipient, int port)
+{
+  KeyerPkt k;
+
+  k.type = PKT_CONF;
+  if (udp_send_edge)
+    k.data.data = FALL_EDGE;
+  else
+    k.data.data = RISE_EDGE;
+
+  k.data.d = queuelatency;
+  k.data.t = symbolwait;
+  send_udp(recipient, port, k);
+}
+
+void recv_config(DotDash &d)
+{
+  if (d.data == RISE_EDGE)
+    config["pkttypetime"] = "%checked%";
+  else
+    config["pkttypetime"] = "%notchecked%";
+
+  config["latency"] = d.d;
+  config["symbol"] = d.t;
+
+  update_config();
 }
 
 void handle_code(PktType, DotDash &);
@@ -458,9 +502,14 @@ void process_incoming_packet(void)
             authsender = wudp.remoteIP();
             authport = wudp.remotePort();
             k.type = PKT_ACK;
+            if (udp_send_edge)
+              k.data.data = FALL_EDGE;
+            else
+              k.data.data = RISE_EDGE;
             send_udp(authsender, authport, k);
             settimeout(idletimer);
             pkt_error = 0;
+            keyer_errno = FAIL_NONE;
             serverstate = KEYER_ACTIVE;
             debug_sem("send", k);
           }
@@ -468,6 +517,7 @@ void process_incoming_packet(void)
           {
             k.type = PKT_NACK;
             send_udp(wudp.remoteIP(), wudp.remotePort(), k);
+            keyer_errno = FAIL_AUTHFAIL;
             serverstate = KEYER_WAIT;
             debug_sem("send", k);
           }
@@ -484,6 +534,7 @@ void process_incoming_packet(void)
         case PKT_AUTH:
           uint8_t buff[16];
           MD5Builder md5;
+          keyer_errno = FAIL_NONE;
           md5.begin();
           md5.add(server_name);
           md5.add(k.hash, 16);
@@ -498,21 +549,24 @@ void process_incoming_packet(void)
 
           /* Success server authentication */
         case PKT_ACK:
+          if (!((k.data.data == FALL_EDGE && udp_send_edge) ||
+                (k.data.data == RISE_EDGE && !udp_send_edge)))
+            send_config(keying_server, keying_server_port);
+
           pkt_error = 0;
+          keyer_errno = FAIL_NONE;
           serverstate = KEYER_ACTIVE;
           settimeout(keepalivetimer);
           break;
 
           /* Server authentication failed */
         case PKT_NACK:
+          keyer_errno = FAIL_AUTHFAIL;
           serverstate = KEYER_WAIT;
           break;
         }
       }
-      if (timeout(authtimer, AUTHTIMEOUT))
-        serverstate = KEYER_WAIT;
       break;
-
     case KEYER_ACTIVE:
       switch (k.type)
       {
@@ -537,7 +591,11 @@ void process_incoming_packet(void)
           resend_code(keying_server, keying_server_port, k.data.seq);
         }
         break;
-
+      /* Configration change */
+      case PKT_CONF:
+        if (server_mode)
+          recv_config(k.data);
+        break;
       /* Connection closed by peer */
       case PKT_RST:
         if (forbidden_reset_outside && server_mode)
@@ -547,6 +605,7 @@ void process_incoming_packet(void)
         }
         else
         {
+          keyer_errno = FAIL_RESETPEER;
           serverstate = KEYER_WAIT;
         }
         break;
@@ -573,6 +632,7 @@ void process_periodical()
     if (timeout(authtimer, AUTHTIMEOUT))
     {
       Serial.println("Authentication timed out");
+      keyer_errno = FAIL_AUTHTIMEOUT;
       serverstate = KEYER_WAIT;
     }
     break;
@@ -656,12 +716,6 @@ void toggleKeyTime()
         debug_print("MARK", d);
         prev_t = d.t;
         duration = d.d;
-        if (duration > MAX_MARK_DURATION)
-        {
-          keystate = NONE;
-          debug_print("ERR1", d);
-          return;
-        }
         startperiod = now;
         mark();
         return;
@@ -687,12 +741,6 @@ void toggleKeyTime()
         debug_print("SPACE", d);
         duration = d.t - d.d - prev_t;
         space_duration = duration;
-        if (duration > MAX_MARK_DURATION)
-        {
-          keystate = NONE;
-          debug_print("ERR2", d);
-          return;
-        }
         prev_t = d.t;
         prev_d = d.d;
         startperiod = now;
@@ -745,7 +793,12 @@ void handle_code(PktType t, DotDash &d)
         send_nack(authsender, authport, prev_seq + 1);
       }
       prev_seq = d.seq;
-
+      if (d.d > MAX_MARK_DURATION)
+      { /* mark duration too long drop packet */
+        keyer_errno = FAIL_DURATIONTOOLONG;
+        pkt_error++;
+        return;
+      }
       if (d.d > long_mark)
         long_mark = d.d;
       if ((d.d > 0) && (d.d < short_mark))
@@ -818,6 +871,33 @@ void handleRoot(void)
   httpServer.send(200, "text/html", response);
 }
 
+String keyer_errmsg(void)
+{
+  const char *msg;
+  switch (keyer_errno)
+  {
+  case FAIL_NONE:
+    msg = "";
+    break;
+  case FAIL_AUTHFAIL:
+    msg = "Authentication failure.";
+    break;
+  case FAIL_AUTHTIMEOUT:
+    msg = "Authentication timed out.";
+    break;
+  case FAIL_RESETPEER:
+    msg = "Connection timed out.";
+    break;
+  case FAIL_DURATIONTOOLONG:
+    msg = "Too long mark duration.";
+    break;
+  default:
+    msg = "Unknown Error.";
+    break;
+  }
+  return String(msg);
+}
+
 void handleStats(void)
 {
   String response, response_server, host;
@@ -847,6 +927,9 @@ void handleStats(void)
   }
   else
     host = "";
+
+  if (keyer_errno != FAIL_NONE)
+    host += "Error: " + keyer_errmsg() + "<br>";
 
   response =
       "<!DOCTYPE html>"
@@ -890,11 +973,9 @@ void handleStats(void)
   httpServer.send(200, "text/html", response);
 }
 
-void update_config(void);
-
 void handleSettings()
 {
-  if (httpServer.hasArg("method"))
+  if (httpServer.hasArg("get-properties"))
   {
     String response;
 
@@ -902,7 +983,7 @@ void handleSettings()
     httpServer.send(200, "applicaton/json", response);
   }
 
-  else if (httpServer.hasArg("reset"))
+  else if (httpServer.hasArg("init"))
   {
     String response;
 
@@ -910,6 +991,12 @@ void handleSettings()
       configfile.savePrefs();
     serializeJson(config, response);
     httpServer.send(200, "applicaton/json", response);
+  }
+  
+  else if (httpServer.hasArg("reset"))
+  {
+    delay(2000);
+    ESP.restart();
   }
 
   else if (SPIFFS.exists("/settings.html"))
@@ -1149,6 +1236,11 @@ void update_config(void)
     udp_send_edge = true;
   queuelatency = config["latency"];
   symbolwait = config["symbol"];
+  _strcpy(keyer_passwd, config["keyerpasswd"]);
+
+  if (!server_mode)
+    send_config(keying_server, keying_server_port);
+
   pkt_error = 0;
 }
 
@@ -1225,6 +1317,7 @@ void setup()
   lastmillis = 0;
   stableperiod = 0;
   key_changed = false;
+  keyer_errno = 0;
   initISRqueue();
 }
 
@@ -1290,11 +1383,16 @@ void loop()
         DotDash d;
         if (dequeueISR(d))
         {
+          if (!udp_send_edge && (d.d > MAX_MARK_DURATION))
+          {
+            keyer_errno = FAIL_DURATIONTOOLONG;
+            break;
+          }
+          keyer_errno = FAIL_NONE;
           if (d.d > long_mark)
             long_mark = d.d;
           if ((d.d > 0) && (d.d < short_mark))
             short_mark = d.d;
-
           send_code(keying_server, keying_server_port, d);
           settimeout(keepalivetimer);
         };
