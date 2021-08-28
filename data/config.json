@@ -1,10 +1,10 @@
 {
-    "version": "0.00",
+    "version": "0.01",
     "keyername": "wifikey",
     "keyerpasswd":"password",
     "servermode":"%checked%",
     "servername":"wifikey",
-    "wifistn": "%checked%",
+    "wifistn": "%notchecked%",
     "SSID1" : "SSID1",
     "passwd1" : "PASSWD1",
     "SSID2": "SSID2",
@@ -16,7 +16,7 @@
     "pkttypetime":"%checked%",
     "localaddr":"192.168.4.1",
     "localport": 56000,
-    "globaladdr":"192.168.1.192",
+    "globaladdr":"192.168.4.1",
     "globalport":56000,
     "latency": 2,
     "symbol" : 2

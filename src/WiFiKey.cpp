@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WebServer.h>
@@ -11,7 +12,7 @@
 #define M5ATOM
 #endif
 
-#define DEBUG_LEVEL 1
+#define DEBUG_LEVEL 0
 #define DROPPKT 0
 
 #include "config_settings.h"
@@ -34,7 +35,7 @@ const uint8_t gpio_key = 19; /* from Keyer */
 const uint8_t gpio_led = 27; /* to LED */
 const uint8_t gpio_out = 23; /* to Photocoupler */
 #else
-const uint8_t gpio_key = 14; /* from Keyer */
+const uint8_t gpio_key = 25; /* from Keyer */
 const uint8_t gpio_led = 26; /* to LED */
 const uint8_t gpio_out = 27; /* to Photocoupler */
 #endif
@@ -377,6 +378,8 @@ void send_config(IPAddress recipient, int port)
   send_udp(recipient, port, k);
 }
 
+void update_config(void);
+
 void recv_config(DotDash &d)
 {
   if (d.data == RISE_EDGE)
@@ -400,7 +403,7 @@ void process_incoming_packet(void)
   KeyerPkt k;
   unsigned long now;
   IPAddress ip;
-  int port, psize;
+  int psize;
 
   psize = wudp.parsePacket();
 
@@ -563,6 +566,8 @@ void process_incoming_packet(void)
         case PKT_NACK:
           keyer_errno = FAIL_AUTHFAIL;
           serverstate = KEYER_WAIT;
+          break;
+        default:
           break;
         }
       }
@@ -813,6 +818,8 @@ void handle_code(PktType t, DotDash &d)
       debug_print("PKT_RESENT", d);
       lastqueued = millis();
       break;
+    default:
+      break;
     }
   }
 }
@@ -829,6 +836,8 @@ void handleWiFiEvent(WiFiEvent_t event)
     connected = false;
     Serial.println("WiFi Lost Connection...");
     break;
+  default:
+    break;
   }
 }
 
@@ -836,7 +845,6 @@ void handleRoot(void)
 {
   String response, keyer, mode;
   String updated = "";
-  unsigned int param;
 
   keyer = keyer_name;
   keyer += ".local (";
@@ -851,6 +859,7 @@ void handleRoot(void)
       "<html>"
       "<head>"
       " <meta charset=\"utf-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, shrink-to-fit=no\">"
       " <title> WiFiKey</title>"
       "</head>"
       "<body bgcolor=\"#455a64\" text=\"#ffffff\">"
@@ -992,7 +1001,7 @@ void handleSettings()
     serializeJson(config, response);
     httpServer.send(200, "applicaton/json", response);
   }
-  
+
   else if (httpServer.hasArg("reset"))
   {
     delay(2000);
