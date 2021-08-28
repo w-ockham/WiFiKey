@@ -35,7 +35,7 @@ const uint8_t gpio_key = 19; /* from Keyer */
 const uint8_t gpio_led = 27; /* to LED */
 const uint8_t gpio_out = 23; /* to Photocoupler */
 #else
-const uint8_t gpio_key = 14; /* from Keyer */
+const uint8_t gpio_key = 25; /* from Keyer */
 const uint8_t gpio_led = 26; /* to LED */
 const uint8_t gpio_out = 27; /* to Photocoupler */
 #endif
