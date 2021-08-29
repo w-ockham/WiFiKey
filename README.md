@@ -129,11 +129,13 @@ GPIOの入力は全てESP32内部でプルアップしています。また出�
 WiFiKeyに起動時に`config.json`を読み込み。利用する環境によって以下の設定を変更してください。
 | パラメータ | 初期値 | 意味 |
 |:-----|:-------|:-----|
-|version|"0.00" |バージョン番号　起動時にNVMに保存されたバージョンとバージョンが異なる場合はconfig.jsonを優先して読み込みます|
+|version|"0.02" |バージョン番号　起動時にNVMに保存されたバージョンとバージョンが異なる場合はconfig.jsonを優先して読み込みます|
 | keyername | "wifikey" |ホスト名　mDNSの名称として使われます|
 | keyerpasswd | "passwd" |クライアント識別用パスワード |
 | servermode| "%checked%"|サーバモード　`%checked%`の場合サーバとして起動|
 | servername| "wifikey" | サーバ名 |
+|enablebt| "%checked%"| Bluetooth機能　`%checked`で起動(サーバのみ) |
+|baudrate| 115200 | シリアル接続時の速度 |
 | wifistn | %notchecked% | WiFiモード　`%checked%`の場合WiFiステーションとして起動|
 | SSID1| - | ステーション時のSSID1 |
 | passwd1| - | SSID1のパスワード |
