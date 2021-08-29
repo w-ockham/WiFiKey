@@ -1,9 +1,11 @@
 {
-    "version": "0.01",
+    "version": "0.02",
     "keyername": "wifikey",
     "keyerpasswd":"password",
     "servermode":"%checked%",
     "servername":"wifikey",
+    "enablebt":"%checked%",
+    "baudrate": 115200,
     "wifistn": "%notchecked%",
     "SSID1" : "SSID1",
     "passwd1" : "PASSWD1",

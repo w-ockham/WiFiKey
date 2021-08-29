@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WebServer.h>
+#include <BluetoothSerial.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
@@ -82,6 +83,9 @@ KeyConfig configfile = KeyConfig(config);
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
 WebServer httpServer(80);
+BluetoothSerial SerialIBT;
+boolean enable_bt, bt_connected, bt_receiving;
+int serial_baudrate;
 
 int pkt_error, pkt_delay;
 unsigned long last_received = 0, last_received_pkt = 0;
@@ -103,8 +107,7 @@ enum PktType
   PKT_CODE,
   PKT_CODE_RESENT,
   PKT_CONF,
-  PKT_SERIAL,
-  PKT_SERIAL_RESENT
+  PKT_SERIAL
 };
 
 enum EdgeType
@@ -121,14 +124,16 @@ struct DotDash
   unsigned long d;
 };
 
+#define PKTBUFSIZ 128
 struct KeyerPkt
 {
   PktType type;
+  int16_t size;
   union
   {
     DotDash data;
     uint8_t hash[16];
-    uint8_t buff[16];
+    uint8_t buffer[PKTBUFSIZ];
   };
 };
 
@@ -290,6 +295,10 @@ void debug_sem(String mesg, KeyerPkt p)
   case PKT_CONF:
     type = "CONF";
     data = "mode=" + String(p.data.data) + " latency=" + String(p.data.d) + " symbol=" + String(p.data.t);
+    break;
+  case PKT_SERIAL:
+    type = "SERIAL";
+    data = "size" + String(p.size);
     break;
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
@@ -596,17 +605,50 @@ void process_incoming_packet(void)
           resend_code(keying_server, keying_server_port, k.data.seq);
         }
         break;
+
       /* Configration change */
       case PKT_CONF:
         if (server_mode)
           recv_config(k.data);
         break;
+
+      /* Receive serial data from Server */
+      case PKT_SERIAL:
+        if (server_mode)
+        {
+          if (bt_connected)
+          {
+            settimeout(idletimer);
+            SerialIBT.write(k.buffer, k.size);
+          }
+        }
+        else
+        {
+          if (enable_bt)
+          {
+            bt_receiving = true;
+            Serial.write(k.buffer, k.size);
+          }
+        }
+        break;
+
       /* Connection closed by peer */
       case PKT_RST:
-        if (forbidden_reset_outside && server_mode)
+        if (server_mode)
         {
-          if (authsender == wudp.remoteIP() && authport == wudp.remotePort())
+          if (forbidden_reset_outside)
+          {
+            if (authsender == wudp.remoteIP() && authport == wudp.remotePort())
+            {
+              keyer_errno = FAIL_RESETPEER;
+              serverstate = KEYER_WAIT;
+            }
+          }
+          else
+          {
+            keyer_errno = FAIL_RESETPEER;
             serverstate = KEYER_WAIT;
+          }
         }
         else
         {
@@ -626,9 +668,59 @@ void process_incoming_packet(void)
   }
 }
 
+void process_serial()
+{
+  static uint8_t sbuff[PKTBUFSIZ];
+  static int sbptr = 0;
+
+  uint8_t c;
+  KeyerPkt k;
+
+  if (server_mode)
+  {
+    if (bt_connected && SerialIBT.available())
+    {
+      c = SerialIBT.read();
+      sbuff[sbptr++] = c;
+      if (c == 0xfd || sbptr >= PKTBUFSIZ)
+      {
+        k.type = PKT_SERIAL;
+        k.size = sbptr;
+        memcpy(k.buffer, sbuff, sbptr);
+        if (serverstate == KEYER_ACTIVE)
+        {
+          settimeout(idletimer);
+          send_udp(authsender, authport, k);
+        }
+        sbptr = 0;
+      }
+    }
+  }
+  else
+  {
+    if (Serial.available())
+    {
+      c = Serial.read();
+      sbuff[sbptr++] = c;
+      if (c == 0xfd || sbptr >= PKTBUFSIZ)
+      {
+        k.type = PKT_SERIAL;
+        k.size = sbptr;
+        memcpy(k.buffer, sbuff, sbptr);
+        if (serverstate == KEYER_ACTIVE)
+          send_udp(keying_server, keying_server_port, k);
+        sbptr = 0;
+      }
+    }
+  }
+}
+
 void process_periodical()
 {
   KeyerPkt k;
+
+  /*  Process Serial Input */
+  process_serial();
 
   /* Periodical process*/
   switch (serverstate)
@@ -909,7 +1001,7 @@ String keyer_errmsg(void)
 
 void handleStats(void)
 {
-  String response, response_server, host;
+  String response, host;
   float estimated_wpm = 0, estimated_ratio = 0;
 
   if (short_mark > 0)
@@ -959,25 +1051,37 @@ void handleStats(void)
       String(pkt_error) +
       "<br>";
 
-  response_server =
-      "Packet Delay: " +
-      String(pkt_delay) +
-      "<br>"
-      "Max queue length: " +
-      String(queue.maxLength()) +
-      "<br>"
-      "Max long mark duration: " +
-      String(long_mark) +
-      "ms<br>"
-      "Space duration: " +
-      String(space_duration) +
-      "ms<br></p>"
-      "</body></html>";
-
-  pkt_delay = 0;
-
   if (server_mode)
-    response += response_server;
+  {
+    response +=
+        "Packet Delay: " +
+        String(pkt_delay) +
+        "<br>"
+        "Max queue length: " +
+        String(queue.maxLength()) +
+        "<br>"
+        "Max long mark duration: " +
+        String(long_mark) +
+        "ms<br>"
+        "Space duration: " +
+        String(space_duration) +
+        "ms<br></p>"
+        "</body></html>";
+  }
+  else
+  {
+    if (enable_bt)
+    {
+      response += "CI-V: ";
+      if (bt_receiving)
+        response += "Receiving";
+      else
+        response += "Not receiving";
+      response += "<br>";
+      bt_receiving = false;
+    }
+  }
+  pkt_delay = 0;
 
   httpServer.send(200, "text/html", response);
 }
@@ -1061,6 +1165,47 @@ boolean hostByString(const char *host, IPAddress &ip)
   }
   else
     return false;
+}
+
+void handleBT(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
+{
+  if (event == ESP_SPP_SRV_OPEN_EVT)
+  {
+    Serial.println("Bluetooth is connected.");
+    bt_connected = true;
+  }
+  else if (event == ESP_SPP_CLOSE_EVT)
+  {
+    Serial.println("Bluetooth is disconnected.");
+    bt_connected = false;
+    SerialIBT.begin(keyer_name);
+  }
+}
+
+void bt_setup()
+{
+
+  bt_receiving = false;
+
+  if (server_mode)
+  {
+    if (enable_bt)
+    {
+      bt_connected = false;
+      Serial.println("Start Bluetooh service.");
+      SerialIBT.register_callback(handleBT);
+      SerialIBT.begin(keyer_name);
+    }
+    else if (bt_connected)
+    {
+      SerialIBT.disconnect();
+      SerialIBT.end();
+    }
+  }
+  /* Reset serial baudrate */
+  Serial.end();
+  Serial.begin(serial_baudrate);
+
 }
 
 void wifi_setup()
@@ -1206,6 +1351,13 @@ void load_config()
   else
     server_mode = false;
 
+  if (strcmp(config["enablebt"], "%checked%") == 0)
+    enable_bt = true;
+  else
+    enable_bt = false;
+
+  serial_baudrate = config["baudrate"];
+
   _strcpy(server_name, config["servername"]);
 
   if (strcmp(config["wifistn"], "%checked%") == 0)
@@ -1249,6 +1401,15 @@ void update_config(void)
 
   if (!server_mode)
     send_config(keying_server, keying_server_port);
+
+  if (strcmp(config["enablebt"], "%checked%") == 0)
+    enable_bt = true;
+  else
+    enable_bt = false;
+
+  serial_baudrate = config["baudrate"];
+
+  bt_setup();
 
   pkt_error = 0;
 }
@@ -1301,8 +1462,9 @@ void config_sanitycheck()
 
 void setup()
 {
-  Serial.begin(115200);
+  serial_baudrate = 115200;
 
+  Serial.begin(serial_baudrate);
   pinMode(gpio_out, OUTPUT);
   pinMode(gpio_key, INPUT_PULLUP);
 
@@ -1313,6 +1475,9 @@ void setup()
 
   config_sanitycheck();
   wifi_setup();
+
+  bt_connected = false;
+  bt_setup();
 
   if (!server_mode)
     attachInterrupt(gpio_key, keyIn, CHANGE);
@@ -1384,7 +1549,8 @@ void loop()
       switch (serverstate)
       {
       case KEYER_WAIT:
-        if (key_changed)
+        if (key_changed ||
+            (enable_bt && Serial.available()))
           start_auth();
         break;
 
