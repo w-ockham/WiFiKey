@@ -4,7 +4,7 @@
     "keyerpasswd":"password",
     "servermode":"%checked%",
     "servername":"wifikey",
-    "enablebt":"%checked%",
+    "enablebt":"%notchecked%",
     "baudrate": 115200,
     "wifistn": "%notchecked%",
     "SSID1" : "SSID1",
