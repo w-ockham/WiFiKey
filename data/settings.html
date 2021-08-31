@@ -77,26 +77,37 @@
         function setProperties(jsondata) {
             for (var item in jsondata) {
                 val = jsondata[item];
+                target = document.getElementById(item);
+
                 if (item == "version") {
                     json_version = val;
                 } else if (val == "%checked%") {
-                    document.getElementById(item).checked = true;
-                    document.getElementById(item).onchange();
+                    target.checked = true;
+                    target.onchange();
                     document.getElementById(item + "-neg").checked = false;
                 } else if (val == "%notchecked%") {
-                    document.getElementById(item).checked = false;
+                    target.checked = false;
                     document.getElementById(item + "-neg").checked = true;
                     document.getElementById(item + "-neg").onchange();
                 } else {
-                    if (document.getElementById(item).type == "password") {
+                    if (target.type == "password") {
                         document.getElementById(item).value = val;
                         document.getElementById(item + "-cnf").value = val;
-                    } else {
-                        document.getElementById(item).value = val;
                     }
+                    else if (target.nodeName == "SELECT") {
+                        for (var i = 0; i < target.length; i++) {
+                            if (target.options[i].value == val)
+                                target.options[i].selected = true;
+                            else
+                                target.options[i].selected = false;
+                        }
+                    }
+                    else
+                        document.getElementById(item).value = val;
                 }
             }
         }
+
 
         function spinner(flag) {
             if (flag)
@@ -143,6 +154,7 @@
         }
 
         function onLoad() {
+
             var request = new XMLHttpRequest();
             var url = location.href + "?get-properties=all";
             spinner(true);
@@ -245,7 +257,7 @@
     <b>Network</b>
     <table>
         <tr>
-            <td>WiFi</td>
+            <td>Wi-Fi</td>
             <td><input type="radio" id="wifistn" name="wifistn" value="station" onchange="enabletext(['globaladdr','globalport','SSID1','passwd1','SSID2','passwd2','SSID3','passwd3'],this.checked);
                         enabletext(['localaddr','APSSID','passwdap'],!this.checked)">Station
                 <input type="radio" id="wifistn-neg" name="wifistn" value="ap" onchange="enabletext(['globaladdr','globalport','SSID1','passwd1','SSID2','passwd2','SSID3','passwd3'],!this.checked)
@@ -345,6 +357,28 @@
             <td>
                 <input type="text" pattern="[0-9]+" title="Decimal number required" id="symbol" name="symbol" value=""
                     size="2" maxlength="2">
+            </td>
+        </tr>
+    </table>
+    <br>
+    <u> Bluetooth CI-V</u>
+    <table>
+        <tr>
+            <td> <input type="radio" id="enablebt-neg" name="enablebt" value="disable"
+                    onchange="enabletext(['baudrate'],!this.checked);"> Disable
+            </td>
+            <td>
+                <input type="radio" id="enablebt" name="enablebt" value="enable"
+                    onchange="enabletext(['baudrate'],this.checked);"> Enable
+            <td>
+                &nbsp &nbsp Serial speed:
+                <select id="baudrate" name="baudrate">
+                    <option value="9600">9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200">115200</option>
+                </select>
             </td>
         </tr>
     </table>
