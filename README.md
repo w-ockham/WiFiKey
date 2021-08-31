@@ -71,7 +71,7 @@ WiFiKeyはネットワークを介してリモートにあるトランシーバ�
  T = (長点の長さ(ms) + 符号間の間隔(ms)) * Latency
 ```
 
-なお、本パラメータはサーバー・クライアント双方で設定することができます。クライアント側でパラメータ設定をするとサーバー側にも値が送られ自動的に設定されます。
+なお、本パラメータはサーバー・クライアント双方で設定することができます。クライアント側でパラメータ設定をするとサーバー側にも値が送られ設定されます。
 
 ### 外部のネットワークからの接続
 自宅内のネットワークにあるサーバーにモバイルルーターなどを経由して外部のネットワークにあるクライアントからアクセスできます。
@@ -128,37 +128,38 @@ GPIOの入力は全てESP32内部でプルアップしています。また出�
 ***
 # ソフトウェア編
 ## インストーラによるファームウェア書き込み
-[インストーラ](https://drive.google.com/file/d/13BLQR2RIWCh-hW1kO9ANtXKOwLWmqJnH/view?usp=sharing)をダウンロードしZIPファイルを展開後、`install.bat`を起動してください。ボードを接続したCOMポートを指定しボードに対応するファームウェアを書き込んでください。次にファイルシステム（ボード共通）を書き込んでください。以上でインストールは完了です。
+[インストーラ](https://drive.google.com/file/d/1Ax090JH7dhp1dvVVmjFnyoU74ZakRTFA/view?usp=sharing)をダウンロードしZIPファイルを展開後、`install.bat`を起動してください。ボードを接続したCOMポートを指定しボードに対応するファームウェアを書き込んでください。次にファイルシステム（ボード共通）を書き込んでください。以上でインストールは完了です。
 
 ![インストーラ画面](images/installer.jpg)
 
 ## 設定ファイル
-WiFiKeyに起動時に`config.json`を読み込み。利用する環境によって以下の設定を変更してください。
-| パラメータ | 初期値 | 意味 |
-|:-----|:-------|:-----|
-|version|"0.02" |バージョン番号　起動時にNVMに保存されたバージョンとバージョンが異なる場合はconfig.jsonを優先して読み込みます|
-| keyername | "wifikey" |ホスト名　mDNSの名称として使われます|
-| keyerpasswd | "passwd" |クライアント識別用パスワード |
-| servermode| "%checked%"|サーバーモード　`%checked%`の場合サーバーとして起動|
-| servername| "wifikey" | サーバー名 |
-|enablebt| "%checked%"| Bluetooth機能　`%checked%`で起動(サーバーのみ) |
-|baudrate| 115200 | シリアル接続時の速度 |
-| wifistn | %notchecked% | Wi-Fiモード　`%checked%`の場合Wi-Fiステーションとして起動|
-| SSID1| - | ステーション時のSSID1 |
-| passwd1| - | SSID1のパスワード |
-| SSID2| -| ステーション時のSSID2 |
-| passwd2| - | SSID2のパスワード
-| SSID3| -| ステーション時のSSID3 |
-| passwd3| - | SSID3のパスワード
-| APSSID| -| アクセスポイント時のSSID |
-| passwdap| - | アクセスポイント時のパスワード|
-| pkttypetime|%checked%|パケットタイプ `%checked%`の場合`Time`で起動|
-| localaddr|192.168.4.1|サーバーローカルアドレス|
-| localport|56000|サーバーローカルアドレスのポート|
-| globaladdr|192.168.4.1|サーバーグローバルアドレス(FQDNで入力可)|
-| globalport|56000|サーバーグローバルポート|
-| latency |2| レイテンシ| 
-| symbol |2| シンボルウェイト|
+WiFiKeyに起動時にNVMに保存されたバージョンと`config.json`のバージョンが異なる場合、以下の設定内容をNVMに読み込みます。画面で設定変更した際に各項目で更新されるタイミングが異なりますので注意してください。
+
+| パラメータ | 初期値 | 意味 |更新タイミング|
+|:----------|:-------|:-----|:------------------|
+|version|"1.00" |バージョン番号　起動時にNVMに保存されたバージョンとバージョンが異なる場合はconfig.jsonを優先して読み込みます|-|
+| keyername | "wifikey" |ホスト名　mDNSの名称として使われます|リブート後|
+| keyerpasswd | "passwd" |接続パスワード |設定変更後|
+| servermode| "%checked%"|サーバーモード　`%checked%`の場合サーバーとして起動|〃|
+| servername| "wifikey" | サーバー名 |設定変更後|
+|enablebt| "%checked%"| Bluetooth機能　`%checked%`で起動(サーバーのみ) |〃|
+|baudrate| 115200 | シリアル接続の速度 |〃|
+| wifistn | %notchecked% | Wi-Fiモード　`%checked%`の場合Wi-Fiステーションとして起動|リブート後|
+| SSID1| - | ステーション時のSSID1 |〃|
+| passwd1| - | SSID1のパスワード |〃|
+| SSID2| -| ステーション時のSSID2 |〃|
+| passwd2| - | SSID2のパスワード|〃|
+| SSID3| -| ステーション時のSSID3 |〃|
+| passwd3| - | SSID3のパスワード|〃|
+| APSSID| -| アクセスポイント時のSSID |〃|
+| passwdap| - | アクセスポイント時のパスワード|〃|
+| pkttypetime|%checked%|パケットタイプ `%checked%`の場合`Time`で起動|設定変更後|
+| localaddr|192.168.4.1|サーバーローカルアドレス|リブート後|
+| localport|56000|サーバーローカルアドレスのポート|〃|
+| globaladdr|192.168.4.1|サーバーグローバルアドレス(FQDNで入力可)|〃|
+| globalport|56000|サーバーグローバルポート|〃|
+| latency |2| レイテンシ| 設定変更後|
+| symbol |2| シンボルウェイト|〃|
 
 ## 開発環境について
 Visual Studio CodeとPlatformIOを使っています。GitHubからZIPファイルを展開後、`Add Project`で追加してください。 また外部ライブラリとしてArduinoJSON・FastLEDを使っています。自動でインストールされない場合は`PIO Home`の`Libraries`から検索してインストールしてください。

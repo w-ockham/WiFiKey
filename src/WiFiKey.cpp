@@ -79,6 +79,7 @@ boolean forbidden_reset_outside = false;
 
 DynamicJsonDocument config(1024);
 KeyConfig configfile = KeyConfig(config);
+boolean config_update;
 
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
@@ -298,7 +299,9 @@ void debug_sem(String mesg, KeyerPkt p)
     break;
   case PKT_SERIAL:
     type = "SERIAL";
-    data = "size" + String(p.size);
+    data = "size=" + String(p.size) + " data=";
+    for (int i = 0; i < p.size; i++)
+      data += String(p.buffer[i], HEX);
     break;
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
@@ -387,19 +390,15 @@ void send_config(IPAddress recipient, int port)
   send_udp(recipient, port, k);
 }
 
-void update_config(void);
-
 void recv_config(DotDash &d)
 {
   if (d.data == RISE_EDGE)
-    config["pkttypetime"] = "%checked%";
+    udp_send_edge = false;
   else
-    config["pkttypetime"] = "%notchecked%";
+    udp_send_edge = true;
 
-  config["latency"] = d.d;
-  config["symbol"] = d.t;
-
-  update_config();
+  queuelatency = d.d;
+  symbolwait = d.t;
 }
 
 void handle_code(PktType, DotDash &);
@@ -1137,7 +1136,7 @@ void handleSettingsPost(void)
   else
   {
     configfile.savePrefs();
-    update_config();
+    config_update = true;
   }
   response = "";
   serializeJson(config, response);
@@ -1203,9 +1202,9 @@ void bt_setup()
     }
   }
   /* Reset serial baudrate */
+  Serial.flush();
   Serial.end();
   Serial.begin(serial_baudrate);
-
 }
 
 void wifi_setup()
@@ -1389,31 +1388,6 @@ void load_config()
   symbolwait = config["symbol"];
 }
 
-void update_config(void)
-{
-  if (strcmp(config["pkttypetime"], "%checked%") == 0)
-    udp_send_edge = false;
-  else
-    udp_send_edge = true;
-  queuelatency = config["latency"];
-  symbolwait = config["symbol"];
-  _strcpy(keyer_passwd, config["keyerpasswd"]);
-
-  if (!server_mode)
-    send_config(keying_server, keying_server_port);
-
-  if (strcmp(config["enablebt"], "%checked%") == 0)
-    enable_bt = true;
-  else
-    enable_bt = false;
-
-  serial_baudrate = config["baudrate"];
-
-  bt_setup();
-
-  pkt_error = 0;
-}
-
 void config_sanitycheck()
 {
   char nvm_version[64], file_version[64];
@@ -1492,6 +1466,7 @@ void setup()
   stableperiod = 0;
   key_changed = false;
   keyer_errno = 0;
+  config_update = false;
   initISRqueue();
 }
 
@@ -1499,16 +1474,79 @@ void start_auth()
 {
   KeyerPkt k;
 
-  Serial.println("Start authentication.");
+  if (server_mode)
+  {
+    serverstate = KEYER_WAIT;
+  }
+  else
+  {
+    k.type = PKT_RST;
+    send_udp(keying_server, keying_server_port, k);
 
-  k.type = PKT_RST;
-  send_udp(keying_server, keying_server_port, k);
+    k.type = PKT_SYN;
+    send_udp(keying_server, keying_server_port, k);
 
-  k.type = PKT_SYN;
-  send_udp(keying_server, keying_server_port, k);
+    settimeout(authtimer);
+    serverstate = KEYER_AUTH;
+  }
+}
 
-  settimeout(authtimer);
-  serverstate = KEYER_AUTH;
+void update_config(void)
+{
+  IPAddress localip;
+
+  boolean reauth = false;
+  config_update = false;
+
+  if (strcmp(config["pkttypetime"], "%checked%") == 0)
+    udp_send_edge = false;
+  else
+    udp_send_edge = true;
+
+  queuelatency = config["latency"];
+  symbolwait = config["symbol"];
+
+  if (!server_mode)
+    send_config(keying_server, keying_server_port);
+  pkt_error = 0;
+
+  if (strcmp(config["enablebt"], "%checked%") == 0)
+    enable_bt = true;
+  else
+    enable_bt = false;
+  serial_baudrate = config["baudrate"];
+  Serial.println("BT is ----------------------" + String(enable_bt));
+  bt_setup();
+
+  if (strcmp(keyer_passwd, config["keyerpasswd"]) != 0)
+  {
+    reauth = true;
+    _strcpy(keyer_passwd, config["keyerpasswd"]);
+  }
+
+  if (!server_mode &&
+      (strcmp(server_name, config["servername"]) != 0))
+  {
+    reauth = true;
+    _strcpy(server_name, config["servername"]);
+    localip = MDNS.queryHost(server_name);
+    if (localip != IPAddress(0, 0, 0, 0))
+    {
+      keying_server = localip;
+      keying_server_port = keyer_local_port;
+    }
+    else
+    {
+      if (hostByString(keyer_global, localip))
+      {
+        keying_server = localip;
+        keying_server_port = keyer_global_port;
+      }
+    }
+  }
+
+  if (reauth)
+    start_auth();
 }
 
 void loop()
@@ -1525,6 +1563,9 @@ void loop()
     process_incoming_packet();
     process_periodical();
     httpServer.handleClient();
+
+    if (config_update)
+      update_config();
 
     if (server_mode)
     { /* Process Keyer Server Loop */
