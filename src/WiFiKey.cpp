@@ -26,7 +26,7 @@
 #define IDLETIMEOUT 1800000 /* Idle timeout (30min)  */
 
 /* Packet Type & Queue params. */
-#define SYMBOLWAIT 4           /* Wait four symbol */
+#define SYMBOLWAIT 2           /* Wait two symbol */
 #define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
 #define MAX_MARK_DURATION 5000 /* Maximum MARK duration 5sec */
 
@@ -200,59 +200,92 @@ RingQueue<DotDash> queue = RingQueue<DotDash>();
 unsigned long lastqueued;
 
 /* ISR Stuff */
-#define STABLEPERIOD 5 /* Discard Interrupts 5msec */
-volatile EdgeType key_edge;
-volatile boolean key_changed;
-volatile unsigned long key_time, key_duration;
-volatile unsigned long stableperiod, lastmillis;
+#define STABLEPERIOD 10 /* Discard Interrupts 10msec */
+volatile int numofint = 0;
+volatile int key_state;
+volatile unsigned long lastmillis;
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
-void IRAM_ATTR keyIn(void);
+EdgeType key_edge;
+boolean key_changed;
 
-QueueHandle_t isrQueue;
-void initISRqueue(void)
+/* prototype */
+void send_code(IPAddress, int, DotDash &);
+void settimeout(unsigned long &t);
+
+void IRAM_ATTR keyInput()
 {
-  isrQueue = xQueueCreate(64, sizeof(DotDash));
+  portENTER_CRITICAL_ISR(&mux);
+  numofint += 1;
+  key_state = digitalRead(gpio_key);
+  lastmillis = xTaskGetTickCount();
+  portEXIT_CRITICAL_ISR(&mux);
 }
 
-void enqueueISR(DotDash &d)
+void processKeyInput()
 {
-  xQueueSendFromISR(isrQueue, (void *)&d, NULL);
-}
-
-int dequeueISR(DotDash &d)
-{
-  return xQueueReceive(isrQueue, (void *)&d, 0);
-}
-
-void IRAM_ATTR keyIn()
-{
+  int saved_key, current_key;
+  int counter;
+  unsigned long now, saved_lastmillis;
+  static unsigned long lastfalledge = 0;
   DotDash d;
-  unsigned long now = millis();
 
-  if ((now - stableperiod) < STABLEPERIOD)
-    return;
-  stableperiod = now;
+  portENTER_CRITICAL(&mux);
+  saved_key = key_state;
+  counter = numofint;
+  saved_lastmillis = lastmillis;
+  portEXIT_CRITICAL(&mux);
 
-  if (digitalRead(gpio_key) == HIGH)
+  current_key = digitalRead(gpio_key);
+  now = millis();
+  /* wait for stable period & read key status */
+  if ((counter != 0) && (current_key == saved_key) &&
+      (now - saved_lastmillis > STABLEPERIOD))
   {
-    key_edge = RISE_EDGE;
-  }
-  else
-  {
-    key_edge = FALL_EDGE;
-    lastmillis = now;
-  }
-  d.t = now;
-  d.d = now - lastmillis;
-  d.data = key_edge;
-  d.seq = seq_number;
+    if (current_key == HIGH)
+    {
+      key_edge = RISE_EDGE;
+    }
+    else
+    {
+      key_edge = FALL_EDGE;
+      lastfalledge = now;
+    }
 
-  if (udp_send_edge || key_edge == RISE_EDGE)
-  {
-    seq_number++;
-    enqueueISR(d);
+    d.data = key_edge;
+    d.t = now;
+    d.d = now - lastfalledge;
+    d.seq = seq_number;
+
+    /* update statics */
+    if (d.d > long_mark)
+      long_mark = d.d;
+    if ((d.d > 0) && (d.d < short_mark))
+      short_mark = d.d;
+
+    if (serverstate == KEYER_ACTIVE)
+    {
+      if (!udp_send_edge && d.d > MAX_MARK_DURATION)
+      {
+        keyer_errno = FAIL_DURATIONTOOLONG;
+      }
+      else
+      {
+        keyer_errno = FAIL_NONE;
+        if (udp_send_edge || key_edge == RISE_EDGE)
+        {
+          send_code(keying_server, keying_server_port, d);
+          seq_number++;
+          settimeout(keepalivetimer);
+        }
+      }
+    }
+    /* clear interrupt counter and notify*/
+    portENTER_CRITICAL(&mux);
+    numofint = 0;
+    portEXIT_CRITICAL(&mux);
+    key_changed = true;
   }
-  key_changed = true;
 }
 
 void debug_print(const char *msg, DotDash &d)
@@ -287,7 +320,7 @@ void debug_sem(String mesg, KeyerPkt p)
     break;
   case PKT_CODE:
     type = "CODE";
-    data = "duration=" + String(p.data.d) + " seq=" + String(p.data.seq);
+    data = "time=" + String(p.data.t) + " duration=" + String(p.data.d) + " seq=" + String(p.data.seq);
     break;
   case PKT_CODE_RESENT:
     type = "RESENT";
@@ -355,6 +388,7 @@ void send_code(IPAddress recipient, int port, DotDash &d)
   k.type = PKT_CODE;
   k.data = d;
   _resend_buffer[d.seq % 16] = k;
+  debug_sem("send code", k);
   send_udp(recipient, port, k);
 }
 
@@ -363,6 +397,7 @@ void resend_code(IPAddress recipient, int port, int seq)
   if (_resend_buffer[seq % 16].data.seq == seq)
   {
     _resend_buffer[seq % 16].type = PKT_CODE_RESENT;
+    debug_sem("resend code", _resend_buffer[seq % 16]);
     send_udp(recipient, port, _resend_buffer[seq % 16]);
   }
 }
@@ -689,6 +724,7 @@ void process_serial()
         if (serverstate == KEYER_ACTIVE)
         {
           settimeout(idletimer);
+          debug_sem("send", k);
           send_udp(authsender, authport, k);
         }
         sbptr = 0;
@@ -707,7 +743,10 @@ void process_serial()
         k.size = sbptr;
         memcpy(k.buffer, sbuff, sbptr);
         if (serverstate == KEYER_ACTIVE)
+        {
+          debug_sem("send", k);
           send_udp(keying_server, keying_server_port, k);
+        }
         sbptr = 0;
       }
     }
@@ -836,6 +875,8 @@ void toggleKeyTime()
         keystate = SPACE;
         debug_print("SPACE", d);
         duration = d.t - d.d - prev_t;
+        if (duration > MAX_MARK_DURATION) /* may not happen */
+          duration = 0;
         space_duration = duration;
         prev_t = d.t;
         prev_d = d.d;
@@ -1454,7 +1495,7 @@ void setup()
   bt_setup();
 
   if (!server_mode)
-    attachInterrupt(gpio_key, keyIn, CHANGE);
+    attachInterrupt(gpio_key, keyInput, CHANGE);
 
   clear_udp_buffer();
   keystate = NONE;
@@ -1463,11 +1504,9 @@ void setup()
   seq_number = 0;
   lastqueued = 0;
   lastmillis = 0;
-  stableperiod = 0;
   key_changed = false;
   keyer_errno = 0;
   config_update = false;
-  initISRqueue();
 }
 
 void start_auth()
@@ -1515,7 +1554,6 @@ void update_config(void)
   else
     enable_bt = false;
   serial_baudrate = config["baudrate"];
-  Serial.println("BT is ----------------------" + String(enable_bt));
   bt_setup();
 
   if (strcmp(keyer_passwd, config["keyerpasswd"]) != 0)
@@ -1587,6 +1625,8 @@ void loop()
     else
     {
       /* Process Keyer Client Loop */
+      processKeyInput();
+
       switch (serverstate)
       {
       case KEYER_WAIT:
@@ -1594,27 +1634,7 @@ void loop()
             (enable_bt && Serial.available()))
           start_auth();
         break;
-
-      case KEYER_ACTIVE:
-        DotDash d;
-        if (dequeueISR(d))
-        {
-          if (!udp_send_edge && (d.d > MAX_MARK_DURATION))
-          {
-            keyer_errno = FAIL_DURATIONTOOLONG;
-            break;
-          }
-          keyer_errno = FAIL_NONE;
-          if (d.d > long_mark)
-            long_mark = d.d;
-          if ((d.d > 0) && (d.d < short_mark))
-            short_mark = d.d;
-          send_code(keying_server, keying_server_port, d);
-          settimeout(keepalivetimer);
-        };
-        break;
       }
-
       /* Toggle LED */
       if (key_changed)
       {
