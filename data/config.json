@@ -20,6 +20,6 @@
     "localport": 56000,
     "globaladdr":"192.168.4.1",
     "globalport":56000,
-    "latency": 2,
+    "latency": 1,
     "symbol" : 2
 }

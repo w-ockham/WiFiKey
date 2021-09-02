@@ -168,16 +168,17 @@ enum KeyError
 int keyer_errno;
 
 /* Display LED */
-const CRGB redcolor = 0x00ff00;
 const CRGB blackcolor = 0x00000;
-const CRGB greencolor = 0xff0000;
+const CRGB redcolor = CRGB::OrangeRed;
+const CRGB greencolor = CRGB::YellowGreen;
+const CRGB bluecolor = CRGB::RoyalBlue;
 CRGB _ledbuffer[1];
 
 void init_led()
 {
 #ifdef M5ATOM
-  FastLED.addLeds<SK6812, gpio_led>(_ledbuffer, 1);
-  FastLED.setBrightness(20);
+  FastLED.addLeds<SK6812, gpio_led, GRB>(_ledbuffer, 1);
+  FastLED.setBrightness(1);
 #else
   pinMode(gpio_led, OUTPUT);
 #endif
@@ -436,6 +437,25 @@ void recv_config(DotDash &d)
   symbolwait = d.t;
 }
 
+/* Toglle Key output */
+void mark()
+{
+  #ifndef M5ATOM
+  /* High priority Wi-Fi tasks may cause serial LED data crashes.*/
+  set_led(redcolor);
+  #endif
+  digitalWrite(gpio_out, HIGH);
+}
+
+void space()
+{
+  #ifndef M5ATOM
+  set_led(blackcolor);
+  #endif
+  digitalWrite(gpio_out, LOW);
+}
+
+/* Parse packets & processing state machine */
 void handle_code(PktType, DotDash &);
 
 void process_incoming_packet(void)
@@ -666,6 +686,12 @@ void process_incoming_packet(void)
         }
         break;
 
+      /* keep sanity */
+      case PKT_KEEPALIVE:
+        if (server_mode)
+          space();
+        break;
+
       /* Connection closed by peer */
       case PKT_RST:
         if (server_mode)
@@ -702,6 +728,7 @@ void process_incoming_packet(void)
   }
 }
 
+/* Process Blutooth Serial */
 void process_serial()
 {
   static uint8_t sbuff[PKTBUFSIZ];
@@ -753,6 +780,7 @@ void process_serial()
   }
 }
 
+/* Periodical Stuff */
 void process_periodical()
 {
   KeyerPkt k;
@@ -794,23 +822,6 @@ void process_periodical()
   default:
     break;
   }
-}
-
-/* Toglle Key output */
-void mark()
-{
-#ifndef M5ATOM
-  set_led(redcolor);
-#endif
-  digitalWrite(gpio_out, HIGH);
-}
-
-void space()
-{
-#ifndef M5ATOM
-  set_led(blackcolor);
-#endif
-  digitalWrite(gpio_out, LOW);
 }
 
 unsigned long marktimeout = 0;
@@ -915,7 +926,7 @@ void handle_code(PktType t, DotDash &d)
     {
     case PKT_CODE:
 #if DROPPKT
-      /* Drop 10% of incoming packet */
+      /* Drop 10% of incoming packet for test. */
       if (random(100) > 90)
         return;
 #endif
@@ -1609,6 +1620,10 @@ void loop()
     { /* Process Keyer Server Loop */
       switch (serverstate)
       {
+      case KEYER_WAIT:
+        space();
+        break;
+
       case KEYER_ACTIVE:
         if (udp_send_edge)
         {
@@ -1639,12 +1654,10 @@ void loop()
       if (key_changed)
       {
         key_changed = false;
-#ifndef M5ATOM
         if (key_edge == RISE_EDGE)
           set_led(blackcolor);
         else
           set_led(redcolor);
-#endif
       }
     }
   }
