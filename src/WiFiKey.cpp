@@ -12,6 +12,10 @@
 #ifdef ARDUINO_M5Stack_ATOM
 #define M5ATOM
 #endif
+#define M5ATOM
+#ifndef M5ATOM
+#include "usbserial.h"
+#endif
 
 #define DEBUG_LEVEL 0
 #define DROPPKT 0
@@ -31,14 +35,18 @@
 #define MAX_MARK_DURATION 5000 /* Maximum MARK duration 5sec */
 
 /* GPIO setting */
+#define MAX_CHANNEL 4
 #ifdef M5ATOM
-const uint8_t gpio_key = 19; /* from Keyer */
-const uint8_t gpio_led = 27; /* to LED */
-const uint8_t gpio_out = 23; /* to Photocoupler */
+const uint8_t gpio_button = 39;              /* Toggle channel */
+const uint8_t gpio_key = 19;                 /* from Keyer */
+const uint8_t gpio_led = 27;                 /* to LED */
+const uint8_t gpio_out[] = {23, 23, 23, 23}; /* to Photocoupler */
 #else
-const uint8_t gpio_key = 25; /* from Keyer */
-const uint8_t gpio_led = 26; /* to LED */
-const uint8_t gpio_out = 27; /* to Photocoupler */
+#define MAX_CHANNEL 4
+const uint8_t gpio_button = 39;              /* Toggle channel */
+const uint8_t gpio_key = 25;                 /* from Keyer */
+const uint8_t gpio_led = 26;                 /* to LED */
+const uint8_t gpio_out[] = {27, 32, 33, 34}; /* to Photocoupler */
 #endif
 
 /* WiFi & IP Address Configrations */
@@ -76,6 +84,8 @@ boolean ap_mode;
 boolean udp_send_edge;
 boolean connected;
 boolean forbidden_reset_outside = false;
+int numofchannel = MAX_CHANNEL;
+int currentchannel = 0;
 
 DynamicJsonDocument config(1024);
 KeyConfig configfile = KeyConfig(config);
@@ -169,16 +179,22 @@ int keyer_errno;
 
 /* Display LED */
 const CRGB blackcolor = 0x00000;
-const CRGB redcolor = CRGB::OrangeRed;
-const CRGB greencolor = CRGB::YellowGreen;
-const CRGB bluecolor = CRGB::RoyalBlue;
+const CRGB redcolor = 0xff0000;
+const CRGB greencolor = 0x00ff00;
+const CRGB bluecolor = 0x0000ff;
+const CRGB whitecolor = 0xffffff;
+CRGB chcolor[MAX_CHANNEL];
 CRGB _ledbuffer[1];
 
 void init_led()
 {
 #ifdef M5ATOM
   FastLED.addLeds<SK6812, gpio_led, GRB>(_ledbuffer, 1);
-  FastLED.setBrightness(1);
+  FastLED.setBrightness(5);
+  chcolor[0] = 0xff0000;
+  chcolor[1] = 0x00ff00;
+  chcolor[2] = 0x0000ff;
+  chcolor[3] = 0xffffff;
 #else
   pinMode(gpio_led, OUTPUT);
 #endif
@@ -202,10 +218,11 @@ unsigned long lastqueued;
 
 /* ISR Stuff */
 #define STABLEPERIOD 10 /* Discard Interrupts 10msec */
-volatile int numofint = 0;
-volatile int key_state;
-volatile unsigned long lastmillis;
+volatile int numofint = 0, numofint2 = 0;
+volatile int key_state, key_state2;
+volatile unsigned long lastmillis, lastmillis2;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE mux2 = portMUX_INITIALIZER_UNLOCKED;
 
 EdgeType key_edge;
 boolean key_changed;
@@ -221,6 +238,15 @@ void IRAM_ATTR keyInput()
   key_state = digitalRead(gpio_key);
   lastmillis = xTaskGetTickCount();
   portEXIT_CRITICAL_ISR(&mux);
+}
+
+void IRAM_ATTR ButtonInput()
+{
+  portENTER_CRITICAL_ISR(&mux2);
+  numofint2 += 1;
+  key_state2 = digitalRead(gpio_button);
+  lastmillis2 = xTaskGetTickCount();
+  portEXIT_CRITICAL_ISR(&mux2);
 }
 
 void processKeyInput()
@@ -289,6 +315,42 @@ void processKeyInput()
   }
 }
 
+void send_config(IPAddress, int);
+
+void processButtonInput()
+{
+  int saved_key, current_key;
+  int counter;
+  unsigned long now, saved_lastmillis;
+
+  portENTER_CRITICAL(&mux2);
+  saved_key = key_state2;
+  counter = numofint2;
+  saved_lastmillis = lastmillis2;
+  portEXIT_CRITICAL(&mux2);
+
+  current_key = digitalRead(gpio_button);
+  now = millis();
+  /* wait for stable period & read key status */
+  if ((counter != 0) && (current_key == saved_key) &&
+      (now - saved_lastmillis > STABLEPERIOD * 5))
+  {
+    if (current_key == LOW && serverstate == KEYER_ACTIVE)
+    {
+      set_led(chcolor[currentchannel]);
+      delay(500);
+      currentchannel = (currentchannel + 1) % numofchannel;
+      send_config(keying_server, keying_server_port);
+      set_led(chcolor[currentchannel]);
+      delay(1000);
+      set_led(blackcolor);
+    }
+    portENTER_CRITICAL(&mux2);
+    numofint2 = 0;
+    portEXIT_CRITICAL(&mux2);
+  }
+}
+
 void debug_print(const char *msg, DotDash &d)
 {
 #if DEBUG_LEVEL > 1
@@ -335,7 +397,7 @@ void debug_sem(String mesg, KeyerPkt p)
     type = "SERIAL";
     data = "size=" + String(p.size) + " data=";
     for (int i = 0; i < p.size; i++)
-      data += String(p.buffer[i], HEX);
+      data += String(p.buffer[i]) + "(0x" + String(p.buffer[i], HEX) + ") ";
     break;
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
@@ -420,39 +482,42 @@ void send_config(IPAddress recipient, int port)
     k.data.data = FALL_EDGE;
   else
     k.data.data = RISE_EDGE;
-
+  k.size = currentchannel;
   k.data.d = queuelatency;
   k.data.t = symbolwait;
   send_udp(recipient, port, k);
 }
 
-void recv_config(DotDash &d)
+void recv_config(KeyerPkt &k)
 {
-  if (d.data == RISE_EDGE)
+  if (k.data.data == RISE_EDGE)
     udp_send_edge = false;
   else
     udp_send_edge = true;
 
-  queuelatency = d.d;
-  symbolwait = d.t;
+  if (k.size < numofchannel)
+    currentchannel = k.size;
+
+  queuelatency = k.data.d;
+  symbolwait = k.data.t;
 }
 
 /* Toglle Key output */
 void mark()
 {
-  #ifndef M5ATOM
+#ifndef M5ATOM
   /* High priority Wi-Fi tasks may cause serial LED data crashes.*/
   set_led(redcolor);
-  #endif
-  digitalWrite(gpio_out, HIGH);
+#endif
+  digitalWrite(gpio_out[currentchannel], HIGH);
 }
 
 void space()
 {
-  #ifndef M5ATOM
+#ifndef M5ATOM
   set_led(blackcolor);
-  #endif
-  digitalWrite(gpio_out, LOW);
+#endif
+  digitalWrite(gpio_out[currentchannel], LOW);
 }
 
 /* Parse packets & processing state machine */
@@ -567,12 +632,12 @@ void process_incoming_packet(void)
           {
             authsender = wudp.remoteIP();
             authport = wudp.remotePort();
+
+            /* return ack with the number of keying channel */
             k.type = PKT_ACK;
-            if (udp_send_edge)
-              k.data.data = FALL_EDGE;
-            else
-              k.data.data = RISE_EDGE;
+            k.size = numofchannel;
             send_udp(authsender, authport, k);
+
             settimeout(idletimer);
             pkt_error = 0;
             keyer_errno = FAIL_NONE;
@@ -615,10 +680,9 @@ void process_incoming_packet(void)
 
           /* Success server authentication */
         case PKT_ACK:
-          if (!((k.data.data == FALL_EDGE && udp_send_edge) ||
-                (k.data.data == RISE_EDGE && !udp_send_edge)))
-            send_config(keying_server, keying_server_port);
-
+          send_config(keying_server, keying_server_port);
+          /* set the number of channels of the connected server */
+          numofchannel = k.size;
           pkt_error = 0;
           keyer_errno = FAIL_NONE;
           serverstate = KEYER_ACTIVE;
@@ -663,18 +727,25 @@ void process_incoming_packet(void)
       /* Configration change */
       case PKT_CONF:
         if (server_mode)
-          recv_config(k.data);
+          recv_config(k);
         break;
 
       /* Receive serial data from Server */
       case PKT_SERIAL:
         if (server_mode)
         {
-          if (bt_connected)
+          if (currentchannel == 1 && bt_connected)
           {
             settimeout(idletimer);
             SerialIBT.write(k.buffer, k.size);
           }
+#ifndef M5ATOM
+          if (currentchannel == 0 && Pl.isReady())
+          {
+            settimeout(idletimer);
+            Pl.SndData(k.size, k.buffer);
+          }
+#endif
         }
         else
         {
@@ -733,12 +804,18 @@ void process_serial()
 {
   static uint8_t sbuff[PKTBUFSIZ];
   static int sbptr = 0;
+#ifndef M5ATOM
+  uint8_t usbbuff[PKTBUFSIZ];
+  uint16_t rcvd;
+  uint8_t rcode;
+#endif
 
   uint8_t c;
   KeyerPkt k;
 
   if (server_mode)
   {
+    /* Bluetooth */
     if (bt_connected && SerialIBT.available())
     {
       c = SerialIBT.read();
@@ -748,15 +825,39 @@ void process_serial()
         k.type = PKT_SERIAL;
         k.size = sbptr;
         memcpy(k.buffer, sbuff, sbptr);
-        if (serverstate == KEYER_ACTIVE)
+        if (serverstate == KEYER_ACTIVE && currentchannel == 1)
         {
           settimeout(idletimer);
-          debug_sem("send", k);
+          debug_sem("sendbt", k);
           send_udp(authsender, authport, k);
         }
         sbptr = 0;
       }
     }
+
+/* USB Serial */
+#ifndef M5ATOM
+    Usb.Task();
+    if (Pl.isReady())
+    {
+      rcvd = PKTBUFSIZ;
+      rcode = Pl.RcvData(&rcvd, usbbuff);
+      if (rcode && rcode != hrNAK)
+        Serial.println("USB serial:" + String(rcode));
+      if (rcvd)
+      {
+        k.type = PKT_SERIAL;
+        k.size = rcvd;
+        memcpy(k.buffer, usbbuff, rcvd);
+        if (serverstate == KEYER_ACTIVE && currentchannel == 0)
+        {
+          settimeout(idletimer);
+          debug_sem("sendusb", k);
+          send_udp(authsender, authport, k);
+        }
+      }
+    }
+#endif
   }
   else
   {
@@ -1068,12 +1169,14 @@ void handleStats(void)
     if (server_mode)
     {
       int remain = (IDLETIMEOUT - (millis() - idletimer)) / 60000;
-      host = "Client: " + authsender.toString() + ":" + String(authport) + "<br>";
+      host = "Client: " + authsender.toString() + ":" + String(authport);
+      host += "(" + String(currentchannel + 1) + "/" + String(numofchannel) + ")<br>";
       host += "Timeout: " + String(remain + 1) + " min<br>";
     }
     else
     {
-      host = "Server: " + keying_server.toString() + ":" + String(keying_server_port) + "<br>";
+      host = "Server: " + keying_server.toString() + ":" + String(keying_server_port);
+      host += "(" + String(currentchannel + 1) + "/" + String(numofchannel) + ")<br>";
       long_mark = 0;
     }
   }
@@ -1491,10 +1594,17 @@ void setup()
   serial_baudrate = 115200;
 
   Serial.begin(serial_baudrate);
-  pinMode(gpio_out, OUTPUT);
-  pinMode(gpio_key, INPUT_PULLUP);
 
-  digitalWrite(gpio_out, LOW);
+  numofchannel = MAX_CHANNEL;
+  for (int i = 0; i < numofchannel; i++)
+  {
+    pinMode(gpio_out[i], OUTPUT);
+    digitalWrite(gpio_out[i], LOW);
+  }
+
+  pinMode(gpio_key, INPUT_PULLUP);
+  pinMode(gpio_button, INPUT_PULLUP);
+
   init_led();
 
   connected = false;
@@ -1505,10 +1615,21 @@ void setup()
   bt_connected = false;
   bt_setup();
 
+#ifndef M5ATOM
+  if (Usb.Init() == -1)
+  {
+    Serial.println("OSCOKIRQ failed to assert");
+  }
+#endif
+
   if (!server_mode)
+  {
     attachInterrupt(gpio_key, keyInput, CHANGE);
+    attachInterrupt(gpio_button, ButtonInput, CHANGE);
+  }
 
   clear_udp_buffer();
+
   keystate = NONE;
   serverstate = KEYER_WAIT;
   prev_seq = 0;
@@ -1516,8 +1637,11 @@ void setup()
   lastqueued = 0;
   lastmillis = 0;
   key_changed = false;
+  currentchannel = 0;
   keyer_errno = 0;
   config_update = false;
+
+  Serial.println("setup done.");
 }
 
 void start_auth()
@@ -1641,13 +1765,12 @@ void loop()
     {
       /* Process Keyer Client Loop */
       processKeyInput();
+      processButtonInput();
 
       switch (serverstate)
       {
       case KEYER_WAIT:
-        if (key_changed ||
-            (enable_bt && Serial.available()))
-          start_auth();
+        start_auth();
         break;
       }
       /* Toggle LED */
@@ -1657,7 +1780,7 @@ void loop()
         if (key_edge == RISE_EDGE)
           set_led(blackcolor);
         else
-          set_led(redcolor);
+          set_led(chcolor[currentchannel]);
       }
     }
   }
