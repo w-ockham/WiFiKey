@@ -3,6 +3,7 @@
 #include <WiFiMulti.h>
 #include <WebServer.h>
 #include <BluetoothSerial.h>
+#include <SPI.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
@@ -12,7 +13,7 @@
 #ifdef ARDUINO_M5Stack_ATOM
 #define M5ATOM
 #endif
-#define M5ATOM
+
 #ifndef M5ATOM
 #include "usbserial.h"
 #endif
@@ -30,23 +31,24 @@
 #define IDLETIMEOUT 1800000 /* Idle timeout (30min)  */
 
 /* Packet Type & Queue params. */
-#define SYMBOLWAIT 2           /* Wait two symbol */
+#define SYMBOLWAIT 1           /* Wait one symbol */
 #define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
 #define MAX_MARK_DURATION 5000 /* Maximum MARK duration 5sec */
 
 /* GPIO setting */
 #define MAX_CHANNEL 4
 #ifdef M5ATOM
-const uint8_t gpio_button = 39;              /* Toggle channel */
-const uint8_t gpio_key = 19;                 /* from Keyer */
-const uint8_t gpio_led = 27;                 /* to LED */
-const uint8_t gpio_out[] = {23, 23, 23, 23}; /* to Photocoupler */
+#define KEY_CHANNEL 1
+const uint8_t gpio_button = 39;  /* Toggle channel */
+const uint8_t gpio_key = 19;     /* from Keyer */
+const uint8_t gpio_led = 27;     /* to LED */
+const uint8_t gpio_out[] = {23}; /* to Photocoupler */
 #else
-#define MAX_CHANNEL 4
-const uint8_t gpio_button = 39;              /* Toggle channel */
-const uint8_t gpio_key = 25;                 /* from Keyer */
-const uint8_t gpio_led = 26;                 /* to LED */
-const uint8_t gpio_out[] = {27, 32, 33, 34}; /* to Photocoupler */
+#define KEY_CHANNEL 2
+const uint8_t gpio_button = 39;      /* Toggle channel */
+const uint8_t gpio_key = 25;         /* from Keyer */
+const uint8_t gpio_led = 26;         /* to LED */
+const uint8_t gpio_out[] = {27, 32}; /* to Photocoupler */
 #endif
 
 /* WiFi & IP Address Configrations */
@@ -94,8 +96,8 @@ boolean config_update;
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
 WebServer httpServer(80);
-BluetoothSerial SerialIBT;
-boolean enable_bt, bt_connected, bt_receiving;
+BluetoothSerial SerialBT;
+boolean enable_bt, bt_started, bt_connected, bt_receiving;
 int serial_baudrate;
 
 int pkt_error, pkt_delay;
@@ -430,7 +432,8 @@ boolean timeout(unsigned long t, unsigned long timeout)
   return (now - t) > timeout;
 }
 
-KeyerPkt _resend_buffer[16];
+#define RESEND_BUFSIZ 16
+KeyerPkt _resend_buffer[RESEND_BUFSIZ];
 
 void send_udp(IPAddress recipient, int port, KeyerPkt &k)
 {
@@ -441,7 +444,7 @@ void send_udp(IPAddress recipient, int port, KeyerPkt &k)
 
 void clear_udp_buffer()
 {
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < RESEND_BUFSIZ; i++)
     _resend_buffer[i].data.seq = 0;
 }
 
@@ -737,7 +740,7 @@ void process_incoming_packet(void)
           if (currentchannel == 1 && bt_connected)
           {
             settimeout(idletimer);
-            SerialIBT.write(k.buffer, k.size);
+            SerialBT.write(k.buffer, k.size);
           }
 #ifndef M5ATOM
           if (currentchannel == 0 && Pl.isReady())
@@ -816,9 +819,9 @@ void process_serial()
   if (server_mode)
   {
     /* Bluetooth */
-    if (bt_connected && SerialIBT.available())
+    if (bt_connected && SerialBT.available())
     {
-      c = SerialIBT.read();
+      c = SerialBT.read();
       sbuff[sbptr++] = c;
       if (c == 0xfd || sbptr >= PKTBUFSIZ)
       {
@@ -1332,7 +1335,7 @@ void handleBT(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
   {
     Serial.println("Bluetooth is disconnected.");
     bt_connected = false;
-    SerialIBT.begin(keyer_name);
+    SerialBT.begin(keyer_name);
   }
 }
 
@@ -1345,15 +1348,20 @@ void bt_setup()
   {
     if (enable_bt)
     {
-      bt_connected = false;
-      Serial.println("Start Bluetooh service.");
-      SerialIBT.register_callback(handleBT);
-      SerialIBT.begin(keyer_name);
+      if (bt_started)
+      {
+        bt_connected = false;
+        bt_started = true;
+        Serial.println("Start Bluetooh service.");
+        SerialBT.register_callback(handleBT);
+        SerialBT.begin(keyer_name);
+      }
     }
     else if (bt_connected)
     {
-      SerialIBT.disconnect();
-      SerialIBT.end();
+      SerialBT.disconnect();
+      SerialBT.end();
+      bt_started = false;
     }
   }
   /* Reset serial baudrate */
@@ -1595,7 +1603,7 @@ void setup()
 
   Serial.begin(serial_baudrate);
 
-  numofchannel = MAX_CHANNEL;
+  numofchannel = KEY_CHANNEL;
   for (int i = 0; i < numofchannel; i++)
   {
     pinMode(gpio_out[i], OUTPUT);
@@ -1613,6 +1621,7 @@ void setup()
   wifi_setup();
 
   bt_connected = false;
+  bt_started = false;
   bt_setup();
 
 #ifndef M5ATOM
