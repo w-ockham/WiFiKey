@@ -1,5 +1,8 @@
+#ifndef CONFIG_SETTING
+#define CONFIG_SETTING
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 
 class KeyConfig
 {
@@ -86,3 +89,4 @@ public:
         return false;
     }
 };
+#endif

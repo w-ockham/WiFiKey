@@ -2,10 +2,6 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WebServer.h>
-#include <BluetoothSerial.h>
-#include <SPI.h>
-#include <SPIFFS.h>
-#include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <MD5Builder.h>
 #include <FastLED.h>
@@ -14,42 +10,10 @@
 #define M5ATOM
 #endif
 
-#ifndef M5ATOM
-#include "usbserial.h"
-#endif
-
-#define DEBUG_LEVEL 0
-#define DROPPKT 0
-
+#include "wifikey.h"
 #include "config_settings.h"
 #include "ringqueue.h"
-
-/* Session Parameters */
-#define WIFITIMEOUT 8000    /* WiFi AP connection time out */
-#define KEEPALIVE 15000     /* Send keep-alive to server every 15sec */
-#define AUTHTIMEOUT 5000    /* Authentication timeout (5sec) */
-#define IDLETIMEOUT 1800000 /* Idle timeout (30min)  */
-
-/* Packet Type & Queue params. */
-#define SYMBOLWAIT 1           /* Wait one symbol */
-#define QLATENCY 2             /* Process queued symbol if ((mark and space duriotn) * qlatency (msec) elapsed. */
-#define MAX_MARK_DURATION 5000 /* Maximum MARK duration 5sec */
-
-/* GPIO setting */
-#define MAX_CHANNEL 4
-#ifdef M5ATOM
-#define KEY_CHANNEL 1
-const uint8_t gpio_button = 39;  /* Toggle channel */
-const uint8_t gpio_key = 19;     /* from Keyer */
-const uint8_t gpio_led = 27;     /* to LED */
-const uint8_t gpio_out[] = {23}; /* to Photocoupler */
-#else
-#define KEY_CHANNEL 2
-const uint8_t gpio_button = 39;      /* Toggle channel */
-const uint8_t gpio_key = 25;         /* from Keyer */
-const uint8_t gpio_led = 26;         /* to LED */
-const uint8_t gpio_out[] = {27, 32}; /* to Photocoupler */
-#endif
+#include "rigcontrol.h"
 
 /* WiFi & IP Address Configrations */
 /* Keyer ID and password */
@@ -79,14 +43,15 @@ int keying_server_port;
 IPAddress authsender;
 int authport;
 
-unsigned int symbolwait = SYMBOLWAIT;
-unsigned int queuelatency = QLATENCY;
+int symbolwait = SYMBOLWAIT;
+int queuelatency = QLATENCY;
 boolean server_mode;
 boolean ap_mode;
 boolean udp_send_edge;
 boolean connected;
 boolean forbidden_reset_outside = false;
-int numofchannel = MAX_CHANNEL;
+
+int numofchannel = KEY_CHANNEL;
 int currentchannel = 0;
 
 DynamicJsonDocument config(1024);
@@ -96,9 +61,6 @@ boolean config_update;
 WiFiUDP wudp;
 WiFiMulti wifiMulti;
 WebServer httpServer(80);
-BluetoothSerial SerialBT;
-boolean enable_bt, bt_started, bt_connected, bt_receiving;
-int serial_baudrate;
 
 int pkt_error, pkt_delay;
 unsigned long last_received = 0, last_received_pkt = 0;
@@ -109,74 +71,12 @@ unsigned long prev_seq;
 unsigned long seq_number;
 unsigned long authtimer, keepalivetimer, idletimer;
 
-enum PktType
-{
-  PKT_SYN,
-  PKT_RST,
-  PKT_AUTH,
-  PKT_KEEPALIVE,
-  PKT_ACK,
-  PKT_NACK,
-  PKT_CODE,
-  PKT_CODE_RESENT,
-  PKT_CONF,
-  PKT_SERIAL
-};
+/* Rig control interface */
+RigControl rigcon(RIG_CTRL_CHANNEL);
 
-enum EdgeType
-{
-  RISE_EDGE = 1,
-  FALL_EDGE
-};
-
-struct DotDash
-{
-  EdgeType data;
-  unsigned long seq;
-  unsigned long t;
-  unsigned long d;
-};
-
-#define PKTBUFSIZ 128
-struct KeyerPkt
-{
-  PktType type;
-  int16_t size;
-  union
-  {
-    DotDash data;
-    uint8_t hash[16];
-    uint8_t buffer[PKTBUFSIZ];
-  };
-};
-
-/* Server state */
-enum ServerState
-{
-  KEYER_WAIT,
-  KEYER_AUTH,
-  KEYER_ACTIVE
-};
+/* Global server/client states */
 int serverstate;
-
-/* Key state */
-enum KeyState
-{
-  NONE,
-  MARK,
-  SPACE
-};
 int keystate;
-
-/* Keyer error code */
-enum KeyError
-{
-  FAIL_NONE,
-  FAIL_AUTHFAIL,
-  FAIL_AUTHTIMEOUT,
-  FAIL_RESETPEER,
-  FAIL_DURATIONTOOLONG
-};
 int keyer_errno;
 
 /* Display LED */
@@ -185,7 +85,7 @@ const CRGB redcolor = 0xff0000;
 const CRGB greencolor = 0x00ff00;
 const CRGB bluecolor = 0x0000ff;
 const CRGB whitecolor = 0xffffff;
-CRGB chcolor[MAX_CHANNEL];
+CRGB chcolor[MAX_KEY_CHANNEL];
 CRGB _ledbuffer[1];
 
 void init_led()
@@ -397,9 +297,9 @@ void debug_sem(String mesg, KeyerPkt p)
     break;
   case PKT_SERIAL:
     type = "SERIAL";
-    data = "size=" + String(p.size) + " data=";
-    for (int i = 0; i < p.size; i++)
-      data += String(p.buffer[i]) + "(0x" + String(p.buffer[i], HEX) + ") ";
+    data = "size=" + String(p.sdata.size) + " channel=" + String(p.sdata.channel) + " data=";
+    for (int i = 0; i < p.sdata.size; i++)
+      data += "0x" + String(p.sdata.buffer[i], HEX) + " ";
     break;
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
@@ -485,7 +385,7 @@ void send_config(IPAddress recipient, int port)
     k.data.data = FALL_EDGE;
   else
     k.data.data = RISE_EDGE;
-  k.size = currentchannel;
+  k.channel = currentchannel;
   k.data.d = queuelatency;
   k.data.t = symbolwait;
   send_udp(recipient, port, k);
@@ -498,8 +398,8 @@ void recv_config(KeyerPkt &k)
   else
     udp_send_edge = true;
 
-  if (k.size < numofchannel)
-    currentchannel = k.size;
+  if (k.channel < numofchannel)
+    currentchannel = k.channel;
 
   queuelatency = k.data.d;
   symbolwait = k.data.t;
@@ -638,7 +538,7 @@ void process_incoming_packet(void)
 
             /* return ack with the number of keying channel */
             k.type = PKT_ACK;
-            k.size = numofchannel;
+            k.channel = numofchannel;
             send_udp(authsender, authport, k);
 
             settimeout(idletimer);
@@ -685,7 +585,7 @@ void process_incoming_packet(void)
         case PKT_ACK:
           send_config(keying_server, keying_server_port);
           /* set the number of channels of the connected server */
-          numofchannel = k.size;
+          numofchannel = k.channel;
           pkt_error = 0;
           keyer_errno = FAIL_NONE;
           serverstate = KEYER_ACTIVE;
@@ -733,32 +633,10 @@ void process_incoming_packet(void)
           recv_config(k);
         break;
 
-      /* Receive serial data from Server */
+      /* Receive serial data from server/client */
       case PKT_SERIAL:
-        if (server_mode)
-        {
-          if (currentchannel == 1 && bt_connected)
-          {
-            settimeout(idletimer);
-            SerialBT.write(k.buffer, k.size);
-          }
-#ifndef M5ATOM
-          if (currentchannel == 0 && Pl.isReady())
-          {
-            settimeout(idletimer);
-            Pl.SndData(k.size, k.buffer);
-          }
-#endif
-        }
-        else
-        {
-          if (enable_bt)
-          {
-            bt_receiving = true;
-            Serial.write(k.buffer, k.size);
-          }
-        }
-        break;
+        rigcon.toRig(k.sdata);
+        settimeout(idletimer);
 
       /* keep sanity */
       case PKT_KEEPALIVE:
@@ -802,103 +680,19 @@ void process_incoming_packet(void)
   }
 }
 
-/* Process Blutooth Serial */
-void process_serial()
-{
-  static uint8_t sbuff[PKTBUFSIZ];
-  static int sbptr = 0;
-#ifndef M5ATOM
-  uint8_t usbbuff[PKTBUFSIZ];
-  uint16_t rcvd;
-  uint8_t rcode;
-#endif
-
-  uint8_t c;
-  KeyerPkt k;
-
-  if (server_mode)
-  {
-    /* Bluetooth */
-    if (bt_connected && SerialBT.available())
-    {
-      c = SerialBT.read();
-      sbuff[sbptr++] = c;
-      if (c == 0xfd || sbptr >= PKTBUFSIZ)
-      {
-        k.type = PKT_SERIAL;
-        k.size = sbptr;
-        memcpy(k.buffer, sbuff, sbptr);
-        if (serverstate == KEYER_ACTIVE && currentchannel == 1)
-        {
-          settimeout(idletimer);
-          debug_sem("sendbt", k);
-          send_udp(authsender, authport, k);
-        }
-        sbptr = 0;
-      }
-    }
-
-/* USB Serial */
-#ifndef M5ATOM
-    Usb.Task();
-    if (Pl.isReady())
-    {
-      rcvd = PKTBUFSIZ;
-      rcode = Pl.RcvData(&rcvd, usbbuff);
-      if (rcode && rcode != hrNAK)
-        Serial.println("USB serial:" + String(rcode));
-      if (rcvd)
-      {
-        k.type = PKT_SERIAL;
-        k.size = rcvd;
-        memcpy(k.buffer, usbbuff, rcvd);
-        if (serverstate == KEYER_ACTIVE && currentchannel == 0)
-        {
-          settimeout(idletimer);
-          debug_sem("sendusb", k);
-          send_udp(authsender, authport, k);
-        }
-      }
-    }
-#endif
-  }
-  else
-  {
-    if (Serial.available())
-    {
-      c = Serial.read();
-      sbuff[sbptr++] = c;
-      if (c == 0xfd || sbptr >= PKTBUFSIZ)
-      {
-        k.type = PKT_SERIAL;
-        k.size = sbptr;
-        memcpy(k.buffer, sbuff, sbptr);
-        if (serverstate == KEYER_ACTIVE)
-        {
-          debug_sem("send", k);
-          send_udp(keying_server, keying_server_port, k);
-        }
-        sbptr = 0;
-      }
-    }
-  }
-}
-
 /* Periodical Stuff */
 void process_periodical()
 {
   KeyerPkt k;
 
-  /*  Process Serial Input */
-  process_serial();
-
   /* Periodical process*/
+  rigcon.loop();
+  
   switch (serverstate)
   {
   case KEYER_AUTH:
     if (timeout(authtimer, AUTHTIMEOUT))
     {
-      Serial.println("Authentication timed out");
       keyer_errno = FAIL_AUTHTIMEOUT;
       serverstate = KEYER_WAIT;
     }
@@ -907,6 +701,16 @@ void process_periodical()
   case KEYER_ACTIVE:
     if (server_mode)
     {
+      for (int i = 0; i < rigcon.numofChannel(); i++)
+      {
+        if (rigcon.available(i))
+        {
+          rigcon.fromRig(i, k.sdata);
+          k.type = PKT_SERIAL;
+          send_udp(authsender, authport, k);
+        }
+      }
+
       if (timeout(idletimer, IDLETIMEOUT))
       {
         k.type = PKT_RST;
@@ -916,6 +720,16 @@ void process_periodical()
     }
     else
     {
+      for (int i = 0; i < rigcon.numofChannel(); i++)
+      {
+        if (rigcon.available(i))
+        {
+          rigcon.fromRig(i, k.sdata);
+          k.type = PKT_SERIAL;
+          send_udp(keying_server, keying_server_port, k);
+        }
+      }
+
       if (timeout(keepalivetimer, KEEPALIVE))
       {
         k.type = PKT_KEEPALIVE;
@@ -1222,24 +1036,15 @@ void handleStats(void)
         "ms<br>"
         "Space duration: " +
         String(space_duration) +
-        "ms<br></p>"
-        "</body></html>";
+        "ms<br>";
   }
-  else
-  {
-    if (enable_bt)
-    {
-      response += "CI-V: ";
-      if (bt_receiving)
-        response += "Receiving";
-      else
-        response += "Not receiving";
-      response += "<br>";
-      bt_receiving = false;
-    }
-  }
-  pkt_delay = 0;
 
+  if (rigcon.receiving())
+      response += "RIG:" +rigcon.decodedMsg() + "<br>";
+
+  response += "</p></body></html>";
+
+  pkt_delay = 0;
   httpServer.send(200, "text/html", response);
 }
 
@@ -1322,52 +1127,6 @@ boolean hostByString(const char *host, IPAddress &ip)
   }
   else
     return false;
-}
-
-void handleBT(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
-{
-  if (event == ESP_SPP_SRV_OPEN_EVT)
-  {
-    Serial.println("Bluetooth is connected.");
-    bt_connected = true;
-  }
-  else if (event == ESP_SPP_CLOSE_EVT)
-  {
-    Serial.println("Bluetooth is disconnected.");
-    bt_connected = false;
-    SerialBT.begin(keyer_name);
-  }
-}
-
-void bt_setup()
-{
-
-  bt_receiving = false;
-
-  if (server_mode)
-  {
-    if (enable_bt)
-    {
-      if (bt_started)
-      {
-        bt_connected = false;
-        bt_started = true;
-        Serial.println("Start Bluetooh service.");
-        SerialBT.register_callback(handleBT);
-        SerialBT.begin(keyer_name);
-      }
-    }
-    else if (bt_connected)
-    {
-      SerialBT.disconnect();
-      SerialBT.end();
-      bt_started = false;
-    }
-  }
-  /* Reset serial baudrate */
-  Serial.flush();
-  Serial.end();
-  Serial.begin(serial_baudrate);
 }
 
 void wifi_setup()
@@ -1496,6 +1255,60 @@ void wifi_setup()
 
 #define _strcpy(x, y) strlcpy(x, y, sizeof(x))
 
+void start_auth();
+
+void update_config(void)
+{
+  IPAddress localip;
+
+  boolean reauth = false;
+  config_update = false;
+
+  if (strcmp(config["pkttypetime"], "%checked%") == 0)
+    udp_send_edge = false;
+  else
+    udp_send_edge = true;
+
+  queuelatency = config["latency"];
+  symbolwait = config["symbol"];
+
+  if (!server_mode)
+    send_config(keying_server, keying_server_port);
+  pkt_error = 0;
+
+  if (strcmp(keyer_passwd, config["keyerpasswd"]) != 0)
+  {
+    reauth = true;
+    _strcpy(keyer_passwd, config["keyerpasswd"]);
+  }
+
+  if (!server_mode &&
+      (strcmp(server_name, config["servername"]) != 0))
+  {
+    reauth = true;
+    _strcpy(server_name, config["servername"]);
+    localip = MDNS.queryHost(server_name);
+    if (localip != IPAddress(0, 0, 0, 0))
+    {
+      keying_server = localip;
+      keying_server_port = keyer_local_port;
+    }
+    else
+    {
+      if (hostByString(keyer_global, localip))
+      {
+        keying_server = localip;
+        keying_server_port = keyer_global_port;
+      }
+    }
+  }
+
+  rigcon.setConfig(server_mode, config);
+
+  if (reauth)
+    start_auth();
+}
+
 void load_config()
 {
   if (!configfile.loadPrefs())
@@ -1512,13 +1325,6 @@ void load_config()
     server_mode = true;
   else
     server_mode = false;
-
-  if (strcmp(config["enablebt"], "%checked%") == 0)
-    enable_bt = true;
-  else
-    enable_bt = false;
-
-  serial_baudrate = config["baudrate"];
 
   _strcpy(server_name, config["servername"]);
 
@@ -1599,9 +1405,7 @@ void config_sanitycheck()
 
 void setup()
 {
-  serial_baudrate = 115200;
-
-  Serial.begin(serial_baudrate);
+  Serial.begin(115200);
 
   numofchannel = KEY_CHANNEL;
   for (int i = 0; i < numofchannel; i++)
@@ -1620,16 +1424,7 @@ void setup()
   config_sanitycheck();
   wifi_setup();
 
-  bt_connected = false;
-  bt_started = false;
-  bt_setup();
-
-#ifndef M5ATOM
-  if (Usb.Init() == -1)
-  {
-    Serial.println("OSCOKIRQ failed to assert");
-  }
-#endif
+  rigcon.setConfig(server_mode, config);
 
   if (!server_mode)
   {
@@ -1650,7 +1445,6 @@ void setup()
   keyer_errno = 0;
   config_update = false;
 
-  Serial.println("setup done.");
 }
 
 void start_auth()
@@ -1672,63 +1466,6 @@ void start_auth()
     settimeout(authtimer);
     serverstate = KEYER_AUTH;
   }
-}
-
-void update_config(void)
-{
-  IPAddress localip;
-
-  boolean reauth = false;
-  config_update = false;
-
-  if (strcmp(config["pkttypetime"], "%checked%") == 0)
-    udp_send_edge = false;
-  else
-    udp_send_edge = true;
-
-  queuelatency = config["latency"];
-  symbolwait = config["symbol"];
-
-  if (!server_mode)
-    send_config(keying_server, keying_server_port);
-  pkt_error = 0;
-
-  if (strcmp(config["enablebt"], "%checked%") == 0)
-    enable_bt = true;
-  else
-    enable_bt = false;
-  serial_baudrate = config["baudrate"];
-  bt_setup();
-
-  if (strcmp(keyer_passwd, config["keyerpasswd"]) != 0)
-  {
-    reauth = true;
-    _strcpy(keyer_passwd, config["keyerpasswd"]);
-  }
-
-  if (!server_mode &&
-      (strcmp(server_name, config["servername"]) != 0))
-  {
-    reauth = true;
-    _strcpy(server_name, config["servername"]);
-    localip = MDNS.queryHost(server_name);
-    if (localip != IPAddress(0, 0, 0, 0))
-    {
-      keying_server = localip;
-      keying_server_port = keyer_local_port;
-    }
-    else
-    {
-      if (hostByString(keyer_global, localip))
-      {
-        keying_server = localip;
-        keying_server_port = keyer_global_port;
-      }
-    }
-  }
-
-  if (reauth)
-    start_auth();
 }
 
 void loop()
