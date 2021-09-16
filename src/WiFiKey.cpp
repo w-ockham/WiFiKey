@@ -73,6 +73,8 @@ unsigned long authtimer, keepalivetimer, idletimer;
 
 /* Rig control interface */
 RigControl rigcon(RIG_CTRL_CHANNEL);
+int startatu;
+String atumessage;
 
 /* Global server/client states */
 int serverstate;
@@ -218,9 +220,11 @@ void processKeyInput()
 }
 
 void send_config(IPAddress, int);
+void send_udp(IPAddress, int, KeyerPkt &);
 
 void processButtonInput()
 {
+  static unsigned long last_pressed;
   int saved_key, current_key;
   int counter;
   unsigned long now, saved_lastmillis;
@@ -237,20 +241,49 @@ void processButtonInput()
   if ((counter != 0) && (current_key == saved_key) &&
       (now - saved_lastmillis > STABLEPERIOD * 5))
   {
-    if (current_key == LOW && serverstate == KEYER_ACTIVE)
+    if (current_key == LOW)
     {
+      last_pressed = millis();
       set_led(chcolor[currentchannel]);
-      delay(500);
-      currentchannel = (currentchannel + 1) % numofchannel;
-      send_config(keying_server, keying_server_port);
-      set_led(chcolor[currentchannel]);
-      delay(1000);
-      set_led(blackcolor);
+    }
+    else if (current_key == HIGH && serverstate == KEYER_ACTIVE)
+    {
+      /* ATU starts long press (3sec) */
+      if ((now - last_pressed) < 1000)
+      {
+        currentchannel = (currentchannel + 1) % numofchannel;
+        send_config(keying_server, keying_server_port);
+        set_led(chcolor[currentchannel]);
+        delay(1000);
+        set_led(blackcolor);
+        last_pressed = 0;
+      }
+      else if ((now - last_pressed) < 4000)
+      {
+        KeyerPkt k;
+
+        k.channel = currentchannel;
+        k.type = PKT_START_ATU;
+        startatu = 5;
+        atumessage = "START";
+        send_udp(keying_server, keying_server_port, k);
+   
+        for (int i = 0; i < 2; i++)
+        {
+          set_led(chcolor[currentchannel]);
+          delay(500);
+          set_led(blackcolor);
+          delay(500);
+        }
+
+        last_pressed = 0;
+      }
     }
     portENTER_CRITICAL(&mux2);
     numofint2 = 0;
     portEXIT_CRITICAL(&mux2);
   }
+
 }
 
 void debug_print(const char *msg, DotDash &d)
@@ -637,6 +670,51 @@ void process_incoming_packet(void)
       case PKT_SERIAL:
         rigcon.toRig(k.sdata);
         settimeout(idletimer);
+        break;
+
+#ifndef M5ATOM
+      /* Start ATU */
+      case PKT_START_ATU:
+        if (server_mode)
+        {
+          set_led(redcolor);
+          if (rigcon.startAH4(k.sdata))
+          {
+            k.type = PKT_ATU_OK;
+            send_udp(authsender, authport, k);
+          }
+          else
+          {
+            k.type = PKT_ATU_FAIL;
+            send_udp(authsender, authport, k);
+          }
+          set_led(blackcolor);
+        }
+        break;
+#endif
+      /* ATU OK response */
+      case PKT_ATU_OK:        
+        atumessage = (char *)k.sdata.buffer;
+        for (int i = 0; i < 3; i++)
+        {
+          set_led(greencolor);
+          delay(250);
+          set_led(blackcolor);
+          delay(250);
+        }
+        break;
+
+      /* ATU Fail response */
+      case PKT_ATU_FAIL:
+        atumessage = (char *)k.sdata.buffer;
+        for (int i = 0; i < 8; i++)
+        {
+          set_led(redcolor);
+          delay(250);
+          set_led(blackcolor);
+          delay(250);
+        }
+        break;
 
       /* keep sanity */
       case PKT_KEEPALIVE:
@@ -687,7 +765,7 @@ void process_periodical()
 
   /* Periodical process*/
   rigcon.loop();
-  
+
   switch (serverstate)
   {
   case KEYER_AUTH:
@@ -1022,6 +1100,12 @@ void handleStats(void)
       String(pkt_error) +
       "<br>";
 
+  if (startatu > 0) 
+  {
+    startatu--;
+    response += "ATU:" + atumessage +"<br>";
+  }
+
   if (server_mode)
   {
     response +=
@@ -1040,7 +1124,7 @@ void handleStats(void)
   }
 
   if (rigcon.receiving())
-      response += "RIG:" +rigcon.decodedMsg() + "<br>";
+    response += "RIG:" + rigcon.decodedMsg() + "<br>";
 
   response += "</p></body></html>";
 
@@ -1426,6 +1510,10 @@ void setup()
 
   rigcon.setConfig(server_mode, config);
 
+#ifndef M5ATOM
+  rigcon.configAH4(0, gpio_atu_start, gpio_atu_key);
+#endif
+
   if (!server_mode)
   {
     attachInterrupt(gpio_key, keyInput, CHANGE);
@@ -1444,7 +1532,7 @@ void setup()
   currentchannel = 0;
   keyer_errno = 0;
   config_update = false;
-
+  startatu = 0;
 }
 
 void start_auth()

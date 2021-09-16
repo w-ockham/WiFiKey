@@ -19,7 +19,7 @@ uint8_t PLAsyncOper::OnInit(ACM *pacm)
 
     LINE_CODING lc;
     lc.dwDTERate = 4800;
-    lc.bCharFormat = 0;
+    lc.bCharFormat = 2;
     lc.bParityType = 0;
     lc.bDataBits = 8;
 
@@ -127,11 +127,12 @@ void RigControl::serial_setup(void)
         else
             hostadpt_started = true;
 
-        if (hostadpt_started) {
+        if (hostadpt_started)
+        {
             LINE_CODING lc;
             lc.dwDTERate = sbaud;
-            lc.bCharFormat = 0;
-            lc.bParityType = 0;
+            lc.bCharFormat = 2; /* two stop bit */
+            lc.bParityType = 0; /* parity none */
             lc.bDataBits = 8;
             Pl.SetLineCoding(&lc);
         }
@@ -166,25 +167,40 @@ boolean RigControl::available(uint8_t channel)
         break;
 
     case IF_USBH:
-        if (Pl.isReady())
+        if (hostadpt_started && Pl.isReady())
         {
             uint16_t rcvd, rcode;
+            uint8_t tmpbuff[PKTBUFSIZ];
+
             rcvd = sizeof(buffer[channel]);
-            rcode = Pl.RcvData(&rcvd, buffer[channel]);
+            rcode = Pl.RcvData(&rcvd, tmpbuff);
             if (rcode && rcode != hrNAK)
                 return false;
-            if (rcvd)
+            if (rcvd > 1)
             {
+                memcpy(buffer[channel], tmpbuff, rcvd);
                 bsize[channel] = rcvd;
                 bready[channel] = true;
                 return true;
+            }
+            else if(rcvd == 1)
+            {
+                c = tmpbuff[0];
+                buffer[channel][bptr[channel]++] = c;
+                if (c == 0xfd || c == 0x3b || bptr[channel] >= PKTBUFSIZ)
+                {
+                    bsize[channel] = bptr[channel];
+                    bready[channel] = true;
+                    bptr[channel] = 0;
+                    return true;
+                }
             }
         }
         return false;
         break;
 
     case IF_BLUETOOTH:
-        if (SerialBT.available())
+        if (bt_connected && SerialBT.available())
         {
             c = SerialBT.read();
             buffer[channel][bptr[channel]++] = c;
@@ -211,7 +227,7 @@ uint16_t RigControl::fromRig(uint8_t channel, SerialData &data)
         return 0;
     }
     memcpy(data.buffer, buffer[channel], bsize[channel]);
-    
+
     memcpy(lastmsg, buffer[channel], bsize[channel]);
     lastch = channel;
     lastsize = bsize[channel];
@@ -236,10 +252,12 @@ uint16_t RigControl::toRig(SerialData &data)
         Serial.write(data.buffer, data.size);
         break;
     case IF_USBH:
-        Pl.SndData(data.size, data.buffer);
+        if (hostadpt_started)
+            Pl.SndData(data.size, data.buffer);
         break;
     case IF_BLUETOOTH:
-        SerialBT.write(data.buffer, data.size);
+        if (bt_connected)
+            SerialBT.write(data.buffer, data.size);
         break;
     default:
         return 0;
@@ -255,7 +273,8 @@ uint16_t RigControl::toRig(SerialData &data)
 
 boolean RigControl::receiving(void)
 {
-    if (hasnewmsg) {
+    if (hasnewmsg)
+    {
         hasnewmsg = false;
         return true;
     }
@@ -267,18 +286,19 @@ String RigControl::decodedMsg(void)
     String msg;
     uint8_t c;
 
-    switch (media[lastch]) {
-        case IF_USB:
-            msg = "USB";
-            break;
-        case IF_USBH:
-            msg = "USBH";
-            break;
-        case IF_BLUETOOTH:
-            msg = "BT";
-            break;
+    switch (media[lastch])
+    {
+    case IF_USB:
+        msg = "USB";
+        break;
+    case IF_USBH:
+        msg = "USBH";
+        break;
+    case IF_BLUETOOTH:
+        msg = "BT";
+        break;
     }
-     
+
     c = lastmsg[0];
     if (c == 0xfe)
     {
@@ -287,12 +307,142 @@ String RigControl::decodedMsg(void)
         msg += " CMD:" + String(lastmsg[4], HEX);
         for (int i = 6; i < lastsize; i++)
             msg += " " + String(lastmsg[i], HEX);
-    } else if ( c >= 'A' || c <= 'Z') {
+    }
+    else if (c >= 'A' || c <= 'Z')
+    {
         msg += "(CAT):";
         for (int i = 0; i < lastsize; i++)
             msg += String((char)lastmsg[i]);
     }
 
     return msg;
+}
 
+boolean RigControl::catRead(int ch, const char *command, const char *arg, char *res)
+{
+    SerialData d;
+    unsigned long now;
+    char mesg[256];
+
+    sprintf(mesg, "%s%s;", command, arg);
+    memcpy(d.buffer, mesg, strlen(mesg));
+    d.size = strlen(mesg);
+    d.channel = ch;
+    toRig(d);
+
+    now = millis();
+    while ((millis() - now) < 5000)
+    {
+        if (available(ch))
+        {
+            fromRig(ch, d);
+            if (d.size > 2)
+            {
+                memcpy(res, &d.buffer[2], d.size - 3);
+                res[d.size - 3] = '\0';
+                return true;
+            }
+            else
+            {
+                memcpy(res, d.buffer, d.size);
+                res[d.size] = '\0';
+                return false;
+            }
+        }
+    }
+    strcpy(res, "AH-4 Timeout");
+    return false;
+}
+
+boolean RigControl::catSet(int ch, const char *command, const char *arg)
+{
+    SerialData d;
+    unsigned long now;
+    char mesg[256];
+
+    sprintf(mesg, "%s%s;", command, arg);
+    memcpy(d.buffer, mesg, strlen(mesg));
+    d.size = strlen(mesg);
+    d.channel = ch;
+    toRig(d);
+
+    now = millis();
+    while (millis() - now < 100)
+    {
+        if (available(ch))
+        {
+            fromRig(ch, d);
+            if (strncmp("?;", (char *)d.buffer, 2) == 0)
+                return false;
+            return true;
+        }
+    }
+    return true;
+}
+
+boolean RigControl::startAH4(SerialData &data)
+{
+    boolean result = true, tuneerror;
+    char pwr[16], mode[16],swr[16];
+    uint8_t state;
+    unsigned long now;
+
+    /* Save current power & mode */
+    result = result && catRead(ah4_channel, "PC", "", pwr);
+    result = result && catRead(ah4_channel, "MD", "0", mode);
+    /* Set power to 10w and change AM mode */
+    result = result && catSet(ah4_channel, "PC", "010");
+    result = result && catSet(ah4_channel, "MD", "05");
+
+    if (!result)
+    {
+        /* Something wrong. Stop tuning. */
+        sprintf((char *)data.buffer, "CAT Read Error");
+        data.size = strlen((char *)data.buffer) + 1;
+        data.channel = ah4_channel;
+        return result;
+    }
+
+    /* Start AH-4 */
+    result = result && catSet(ah4_channel, "TX", "1");
+    delay(500);
+    digitalWrite(ah4_start, HIGH);
+    delay(1500);
+    digitalWrite(ah4_start, LOW);
+    delay(500);
+
+    now = millis();
+    do
+    {
+        delay(200);
+        state = digitalRead(ah4_key);
+    } while (state != HIGH && (now - millis()) < 10000);
+
+    /*  Unable to tuning within 10 sec */
+    if ((now - millis()) > 10000)
+        tuneerror = true;
+    else
+        tuneerror = false;
+
+    /* Stop transmission and restore params. */
+    result = result && catRead(ah4_channel, "RM", "6", swr);
+    result = result && catSet(ah4_channel, "TX", "0");
+    result = result && catSet(ah4_channel, "MD", mode);
+    result = result && catSet(ah4_channel, "PC", pwr);
+
+    if (tuneerror || state == LOW)
+    {
+        sprintf((char *)data.buffer,"ERR K=%d T/O=%d", state, tuneerror);
+        data.size = strlen((char *)data.buffer) + 1;
+        data.channel = ah4_channel;
+    }
+    else
+    {
+        swr[4] = '\0';
+        sprintf((char *)data.buffer, "DONE SWR=%s", &swr[1]);
+        data.size = strlen((char *)data.buffer) + 1;
+        data.channel = ah4_channel;   
+    }
+
+    return tuneerror && result;
 }

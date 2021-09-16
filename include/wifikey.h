@@ -30,6 +30,8 @@ const uint8_t gpio_button = 39;      /* Toggle channel */
 const uint8_t gpio_key = 25;         /* from Keyer */
 const uint8_t gpio_led = 26;         /* to LED */
 const uint8_t gpio_out[] = {27, 32}; /* to Photocoupler */
+const uint8_t gpio_atu_start = 33;   /* AH-4 START */
+const uint8_t gpio_atu_key = 16;     /* AH-4 KEY */
 #endif
 
 /* Rig Control Channel */
@@ -46,7 +48,10 @@ enum PktType
   PKT_CODE,
   PKT_CODE_RESENT,
   PKT_CONF,
-  PKT_SERIAL
+  PKT_SERIAL,
+  PKT_START_ATU,
+  PKT_ATU_OK,
+  PKT_ATU_FAIL
 };
 
 enum EdgeType
@@ -75,7 +80,7 @@ struct KeyerPkt
   PktType type;
   uint8_t channel;
   union
-  {  
+  {
     uint8_t hash[16];
     DotDash data;
     SerialData sdata;

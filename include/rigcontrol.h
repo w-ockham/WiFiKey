@@ -28,6 +28,11 @@ class RigControl
     };
     static char btname[64];
     int num_of_channel;
+
+    int ah4_channel;
+    uint8_t ah4_start;
+    uint8_t ah4_key;
+
     int media[RIG_CTRL_CHANNEL];
     int baudrate[RIG_CTRL_CHANNEL];
     int bsize[RIG_CTRL_CHANNEL];
@@ -35,9 +40,9 @@ class RigControl
     boolean bready[RIG_CTRL_CHANNEL];
     uint8_t buffer[RIG_CTRL_CHANNEL][PKTBUFSIZ];
     boolean mready[RIG_CTRL_CHANNEL];
-    
+
     uint8_t lastmsg[PKTBUFSIZ];
-    int lastch,lastsize;
+    int lastch, lastsize;
     boolean hasnewmsg;
 
     USB Usb;
@@ -53,6 +58,7 @@ public:
     RigControl(int numchan) : Pl(&Usb, &AsyncOper)
     {
         num_of_channel = numchan;
+
         bt_started = false;
         bt_connected = false;
         hostadpt_started = false;
@@ -66,6 +72,17 @@ public:
             mready[i] = false;
         }
     };
+
+    void configAH4(int ch, uint8_t start, uint8_t key)
+    {
+        ah4_channel =ch;
+        ah4_start = start;
+        ah4_key = key;
+
+        pinMode(ah4_start, OUTPUT);
+        digitalWrite(ah4_start, LOW);
+        pinMode(ah4_key, INPUT_PULLUP);
+    }
 
     inline int numofChannel(void)
     {
@@ -93,11 +110,15 @@ public:
     uint16_t toRig(SerialData &data);
     boolean receiving(void);
     String decodedMsg(void);
+    boolean startAH4(SerialData &);
+
+    boolean catRead(int, const char *, const char *, char *);
+    boolean catSet(int , const char *, const char *);
 
     inline void loop(void)
     {
         if (hostadpt_started)
-         Usb.Task();
+            Usb.Task();
     }
 };
 #endif
