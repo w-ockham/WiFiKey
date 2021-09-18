@@ -54,7 +54,7 @@ boolean forbidden_reset_outside = false;
 int numofchannel = KEY_CHANNEL;
 int currentchannel = 0;
 
-DynamicJsonDocument config(1024);
+DynamicJsonDocument config(2048);
 KeyConfig configfile = KeyConfig(config);
 boolean config_update;
 
@@ -678,7 +678,7 @@ void process_incoming_packet(void)
         if (server_mode)
         {
           set_led(redcolor);
-          if (rigcon.startAH4(k.sdata))
+          if (rigcon.startATU(currentchannel, k.sdata))
           {
             k.type = PKT_ATU_OK;
             send_udp(authsender, authport, k);
@@ -1511,7 +1511,7 @@ void setup()
   rigcon.setConfig(server_mode, config);
 
 #ifndef M5ATOM
-  rigcon.configAH4(0, gpio_atu_start, gpio_atu_key);
+  rigcon.configAH4(gpio_atu_start, gpio_atu_key);
 #endif
 
   if (!server_mode)

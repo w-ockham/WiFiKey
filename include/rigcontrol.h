@@ -26,14 +26,25 @@ class RigControl
         IF_USBH,     /* HostAdapter */
         IF_BLUETOOTH /* Onboard Bluetooth */
     };
+    enum
+
+    {
+        NONE,       /* NONE */
+        PROTO_NONE, /* No protocol */
+        PROTO_CAT,  /*  CAT protocol */
+        PROTO_CIV   /* CIV */
+    };
+
     static char btname[64];
     int num_of_channel;
 
     int ah4_channel;
     uint8_t ah4_start;
     uint8_t ah4_key;
+    uint8_t civ_addr_from, civ_addr_to;
 
     int media[RIG_CTRL_CHANNEL];
+    int proto[RIG_CTRL_CHANNEL];
     int baudrate[RIG_CTRL_CHANNEL];
     int bsize[RIG_CTRL_CHANNEL];
     int bptr[RIG_CTRL_CHANNEL];
@@ -71,11 +82,13 @@ public:
             bready[i] = false;
             mready[i] = false;
         }
+
+        civ_addr_from = 0x30;
+        civ_addr_to = 0xa4;
     };
 
-    void configAH4(int ch, uint8_t start, uint8_t key)
+    void configAH4(uint8_t start, uint8_t key)
     {
-        ah4_channel =ch;
         ah4_start = start;
         ah4_key = key;
 
@@ -110,10 +123,12 @@ public:
     uint16_t toRig(SerialData &data);
     boolean receiving(void);
     String decodedMsg(void);
-    boolean startAH4(SerialData &);
+    boolean startATU(int, SerialData &);
 
     boolean catRead(int, const char *, const char *, char *);
-    boolean catSet(int , const char *, const char *);
+    boolean catSet(int, const char *, const char *);
+    boolean civRead(int, uint16_t, char *);
+    boolean civSet(int, uint16_t, uint8_t);
 
     inline void loop(void)
     {

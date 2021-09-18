@@ -51,11 +51,11 @@ void RigControl::setConfig(boolean serverp, DynamicJsonDocument &config)
         ch = prefix + "ch" + String(i + 1) + "-";
 
         strlcpy(conf, config[ch + "media"], sizeof(conf));
-        if (strcmp(conf, "%notchecked%") == 0)
+        if (strcmp(conf, "BT") == 0)
         {
             media[i] = IF_BLUETOOTH;
         }
-        else if (strcmp(conf, "%checked%") == 0)
+        else if (strcmp(conf, "USB") == 0)
         {
             if (serverp)
                 media[i] = IF_USBH;
@@ -64,6 +64,14 @@ void RigControl::setConfig(boolean serverp, DynamicJsonDocument &config)
         }
         else
             media[i] = IF_USB;
+
+        strlcpy(conf, config[ch + "proto"], sizeof(conf));
+        if (strcmp(conf, "CAT") == 0)
+            proto[i] = PROTO_CAT;
+        else if (strcmp(conf, "CIV") == 0)
+            proto[i] = PROTO_CIV;
+        else
+            proto[i] = NONE;
 
         baudrate[i] = config[ch + "baudrate"];
     }
@@ -141,12 +149,25 @@ void RigControl::serial_setup(void)
 
 boolean RigControl::available(uint8_t channel)
 {
-    uint8_t c;
+    uint8_t c, delim;
 
     if (channel > num_of_channel - 1)
         return false;
 
     bready[channel] = false;
+
+    switch (proto[channel])
+    {
+    case PROTO_CAT:
+        delim = 0x3b; // 0x3b = ';'
+        break;
+    case PROTO_CIV:
+        delim = 0xfd;
+        break;
+    default:
+        delim = 0x0;
+        break;
+    }
 
     switch (media[channel])
     {
@@ -155,7 +176,7 @@ boolean RigControl::available(uint8_t channel)
         {
             c = Serial.read();
             buffer[channel][bptr[channel]++] = c;
-            if (c == 0xfd || c == 0x3b || bptr[channel] >= PKTBUFSIZ)
+            if (c == delim || bptr[channel] >= PKTBUFSIZ)
             {
                 bsize[channel] = bptr[channel];
                 bready[channel] = true;
@@ -183,11 +204,11 @@ boolean RigControl::available(uint8_t channel)
                 bready[channel] = true;
                 return true;
             }
-            else if(rcvd == 1)
+            else if (rcvd == 1)
             {
                 c = tmpbuff[0];
                 buffer[channel][bptr[channel]++] = c;
-                if (c == 0xfd || c == 0x3b || bptr[channel] >= PKTBUFSIZ)
+                if (c == delim || bptr[channel] >= PKTBUFSIZ)
                 {
                     bsize[channel] = bptr[channel];
                     bready[channel] = true;
@@ -322,11 +343,9 @@ boolean RigControl::catRead(int ch, const char *command, const char *arg, char *
 {
     SerialData d;
     unsigned long now;
-    char mesg[256];
 
-    sprintf(mesg, "%s%s;", command, arg);
-    memcpy(d.buffer, mesg, strlen(mesg));
-    d.size = strlen(mesg);
+    sprintf((char *)d.buffer, "%s%s;", command, arg);
+    d.size = strlen((char *)d.buffer);
     d.channel = ch;
     toRig(d);
 
@@ -350,7 +369,7 @@ boolean RigControl::catRead(int ch, const char *command, const char *arg, char *
             }
         }
     }
-    strcpy(res, "AH-4 Timeout");
+    strcpy(res, "Timeout");
     return false;
 }
 
@@ -358,11 +377,9 @@ boolean RigControl::catSet(int ch, const char *command, const char *arg)
 {
     SerialData d;
     unsigned long now;
-    char mesg[256];
 
-    sprintf(mesg, "%s%s;", command, arg);
-    memcpy(d.buffer, mesg, strlen(mesg));
-    d.size = strlen(mesg);
+    sprintf((char *)d.buffer, "%s%s;", command, arg);
+    d.size = strlen((char *)d.buffer);
     d.channel = ch;
     toRig(d);
 
@@ -380,31 +397,131 @@ boolean RigControl::catSet(int ch, const char *command, const char *arg)
     return true;
 }
 
-boolean RigControl::startAH4(SerialData &data)
+boolean RigControl::civRead(int ch, uint16_t command, char *res)
+{
+    SerialData d;
+    unsigned long now;
+
+    d.buffer[0] = 0xfe;
+    d.buffer[1] = 0xfe;
+    d.buffer[2] = civ_addr_to;
+    d.buffer[3] = civ_addr_from;
+    d.buffer[4] = (command & 0xff00) >> 8;
+    d.buffer[5] = (uint8_t)(command & 0x00ff);
+    d.buffer[6] = 0xfd;
+
+    d.size = 7;
+    d.channel = ch;
+    toRig(d);
+
+    now = millis();
+    while ((millis() - now) < 5000)
+    {
+        if (available(ch))
+        {
+            fromRig(ch, d);
+            if (d.buffer[d.size - 1] == 0xfd)
+            {
+                memcpy(res, &d.buffer[6], d.size - 6);
+                res[d.size - 1] = '\0';
+                return true;
+            }
+            else
+            {
+                memcpy(res, d.buffer, d.size);
+                res[d.size] = '\0';
+                return false;
+            }
+        }
+    }
+    strcpy(res, "Timeout");
+    return false;
+}
+
+boolean RigControl::civSet(int ch, uint16_t command, uint8_t arg)
+{
+    SerialData d;
+    unsigned long now;
+
+    d.buffer[0] = 0xfe;
+    d.buffer[1] = 0xfe;
+    d.buffer[2] = civ_addr_to;
+    d.buffer[3] = civ_addr_from;
+    d.buffer[4] = (command & 0xff00) >> 8;
+    d.buffer[5] = (uint8_t)(command & 0x00ff);
+    d.buffer[6] = arg;
+    d.buffer[7] = 0xfd;
+
+    d.size = 8;
+    d.channel = ch;
+    toRig(d);
+
+    now = millis();
+    while (millis() - now < 100)
+    {
+        if (available(ch))
+        {
+            fromRig(ch, d);
+            return true;
+        }
+    }
+    return true;
+}
+
+boolean RigControl::startATU(int channel, SerialData &res)
 {
     boolean result = true, tuneerror;
-    char pwr[16], mode[16],swr[16];
+    char pwr[16], mode[16], swr[16];
     uint8_t state;
     unsigned long now;
 
-    /* Save current power & mode */
-    result = result && catRead(ah4_channel, "PC", "", pwr);
-    result = result && catRead(ah4_channel, "MD", "0", mode);
-    /* Set power to 10w and change AM mode */
-    result = result && catSet(ah4_channel, "PC", "010");
-    result = result && catSet(ah4_channel, "MD", "05");
+    switch (proto[channel])
+    {
+    case PROTO_CAT:
+        /* Save current power & mode */
+        result = result && catRead(channel, "PC", "", pwr);
+        result = result && catRead(channel, "MD", "0", mode);
+        /* Set power to 10w and change RTTY mode */
+        result = result && catSet(channel, "PC", "010");
+        result = result && catSet(channel, "MD", "06");
+        break;
+
+    case PROTO_CIV:
+        /* Save current power & mode */
+        //result = result && civRead(channel, 0x140a, 0x1a);
+        result = result && civRead(channel, 0x0400, mode);
+        /* Set power to 10w and change RTTY mode */
+        //result = result && civRead(channel, 0x140a, 0x1a);
+        result = result && civSet(channel, 0x0200, 0x04);
+        break;
+
+    default:
+        sprintf((char *)res.buffer, "NO ATU connected.");
+        res.size = strlen((char *)res.buffer) + 1;
+        res.channel = channel;
+        return result;
+        return false;
+    }
 
     if (!result)
     {
         /* Something wrong. Stop tuning. */
-        sprintf((char *)data.buffer, "CAT Read Error");
-        data.size = strlen((char *)data.buffer) + 1;
-        data.channel = ah4_channel;
+        sprintf((char *)res.buffer, "Parameter read error");
+        res.size = strlen((char *)res.buffer) + 1;
+        res.channel = channel;
         return result;
     }
 
     /* Start AH-4 */
-    result = result && catSet(ah4_channel, "TX", "1");
+    switch (proto[channel])
+    {
+    case PROTO_CAT:
+        result = result && catSet(channel, "TX", "1");
+        break;
+    case PROTO_CIV:
+        result = result && civSet(channel, 0x1c00, 0x01);
+    }
+
     delay(500);
     digitalWrite(ah4_start, HIGH);
     delay(1500);
@@ -416,32 +533,45 @@ boolean RigControl::startAH4(SerialData &data)
     {
         delay(200);
         state = digitalRead(ah4_key);
-    } while (state != HIGH && (now - millis()) < 10000);
+    } while (state != HIGH && (millis() - now) < 10000);
 
     /*  Unable to tuning within 10 sec */
-    if ((now - millis()) > 10000)
+    if ((millis() - now) > 10000)
         tuneerror = true;
     else
         tuneerror = false;
 
     /* Stop transmission and restore params. */
-    result = result && catRead(ah4_channel, "RM", "6", swr);
-    result = result && catSet(ah4_channel, "TX", "0");
-    result = result && catSet(ah4_channel, "MD", mode);
-    result = result && catSet(ah4_channel, "PC", pwr);
+    switch (proto[channel])
+    {
+    case PROTO_CAT:
+        result = result && catRead(channel, "RM", "6", swr);
+        result = result && catSet(channel, "TX", "0");
+        result = result && catSet(channel, "MD", mode);
+        result = result && catSet(channel, "PC", pwr);
+        break;
+
+    case PROTO_CIV:
+        result = result && civRead(channel, 0x1512, swr);
+        result = result && civSet(channel, 0x1c00, 0x00);
+        result = result && civSet(channel, 0x0600, (uint8_t)mode[0]);
+        //result = result && civSet(channel, 0x140a, pwr);
+        break;
+    }
 
     if (tuneerror || state == LOW)
     {
-        sprintf((char *)data.buffer,"ERR K=%d T/O=%d", state, tuneerror);
-        data.size = strlen((char *)data.buffer) + 1;
-        data.channel = ah4_channel;
+        sprintf((char *)res.buffer, "ERR K=%d T/O=%d", state, tuneerror);
+        res.size = strlen((char *)res.buffer) + 1;
+        res.channel = channel;
     }
     else
     {
+
         swr[4] = '\0';
-        sprintf((char *)data.buffer, "DONE SWR=%s", &swr[1]);
-        data.size = strlen((char *)data.buffer) + 1;
-        data.channel = ah4_channel;   
+        sprintf((char *)res.buffer, "DONE SWR=%s", &swr[1]);
+        res.size = strlen((char *)res.buffer) + 1;
+        res.channel = channel;
     }
 
     return tuneerror && result;

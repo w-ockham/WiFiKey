@@ -78,7 +78,8 @@ public:
             DeserializationError error = deserializeJson(json_prefs, file);
             if (error)
             {
-                Serial.print("JSON File format error:");
+                Serial.print("JSON File format error");
+                Serial.println(error.c_str());
                 Serial.println(fname);
                 return false;
             }
