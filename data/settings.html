@@ -243,10 +243,10 @@
             <td>Mode</td>
             <td><input type="radio" id="servermode" name="servermode" value="server"
                     onchange="enabletext(['servername','cl-ch1-media','cl-ch1-proto','cl-ch1-baudrate','cl-ch2-media','cl-ch2-proto','cl-ch2-baudrate'],!this.checked);
-                    enabletext(['sv-ch1-media','sv-ch1-proto','sv-ch1-baudrate','sv-ch1-atu','sv-ch2-media','sv-ch2-proto','sv-ch2-baudrate','sv-ch2-atu'],this.checked)">Server
+                    enabletext(['sv-ch1-media','sv-ch1-proto','sv-ch1-baudrate','sv-ch2-media','sv-ch2-proto','sv-ch2-baudrate',],this.checked)">Server
                 <input type="radio" id="servermode-neg" name="servermode" value="client"
                     onchange="enabletext(['servername','cl-ch1-media','cl-ch1-proto','cl-ch1-baudrate','cl-ch2-media','cl-ch2-proto','cl-ch2-baudrate'],this.checked);
-                    enabletext(['sv-ch1-media','sv-ch1-proto','sv-ch1-baudrate','sv-ch1-atu','sv-ch2-media','sv-ch2-proto','sv-ch2-baudrate','sv-ch2-atu'],!this.checked)">Client
+                    enabletext(['sv-ch1-media','sv-ch1-proto','sv-ch1-baudrate','sv-ch2-media','sv-ch2-proto','sv-ch2-baudrate'],!this.checked)">Client
             </td>
         </tr>
         <tr>
@@ -380,6 +380,7 @@
                 <select id="cl-ch1-proto" name="cl-ch1-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
+                    <option value="NONE">NONE</option>
                 </select>
             </td>
             <td>
@@ -407,6 +408,7 @@
                 <select id="cl-ch2-proto" name="cl-ch2-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
+                    <option value="NONE">NONE</option>
                 </select>
             </td>
             <td>
@@ -437,7 +439,7 @@
                 <select id="sv-ch1-proto" name="sv-ch1-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
-                    <option value="NONE">CAT</option>
+                    <option value="NONE">NONE</option>
                 </select>
             </td>
             <td>
@@ -465,7 +467,7 @@
                 <select id="sv-ch2-proto" name="sv-ch2-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
-                    <option value="NONE">CAT</option>
+                    <option value="NONE">NONE</option>
                 </select>
             </td>
             <td>
