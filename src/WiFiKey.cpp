@@ -249,7 +249,7 @@ void processButtonInput()
     else if (current_key == HIGH && serverstate == KEYER_ACTIVE)
     {
       /* ATU starts long press (3sec) */
-      if ((now - last_pressed) < 1000)
+      if ((now - last_pressed) < 500)
       {
         currentchannel = (currentchannel + 1) % numofchannel;
         send_config(keying_server, keying_server_port);
@@ -258,7 +258,7 @@ void processButtonInput()
         set_led(blackcolor);
         last_pressed = 0;
       }
-      else if ((now - last_pressed) < 4000)
+      else if ((now - last_pressed) < 2000)
       {
         KeyerPkt k;
 
@@ -268,7 +268,7 @@ void processButtonInput()
         atumessage = "START";
         send_udp(keying_server, keying_server_port, k);
    
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < 3; i++)
         {
           set_led(chcolor[currentchannel]);
           delay(500);

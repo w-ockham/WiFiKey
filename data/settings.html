@@ -376,7 +376,7 @@
                 </select>
             </td>
             <td>
-                &nbsp Protocol:
+                &nbsp Protocol
                 <select id="cl-ch1-proto" name="cl-ch1-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
@@ -384,7 +384,7 @@
                 </select>
             </td>
             <td>
-                &nbsp Speed:
+                &nbsp Speed
                 <select id="cl-ch1-baudrate" name="cl-ch1-baudrate">
                     <option value="4800">4800</option>
                     <option value="9600">9600</option>
@@ -404,7 +404,7 @@
                 </select>
             </td>
             <td>
-                &nbsp Protocol:
+                &nbsp Protocol
                 <select id="cl-ch2-proto" name="cl-ch2-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
@@ -412,7 +412,7 @@
                 </select>
             </td>
             <td>
-                &nbsp Speed:
+                &nbsp Speed
                 <select id="cl-ch2-baudrate" name="cl-ch2-baudrate">
                     <option value="4800">4800</option>
                     <option value="9600">9600</option>
@@ -435,15 +435,15 @@
                 </select>
             </td>
             <td>
-                &nbsp Protocol:
+                &nbsp Protocol
                 <select id="sv-ch1-proto" name="sv-ch1-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
-                    <option value="NONE">NONE</option>
+                    <option value="OTHER">OTHER</option>
                 </select>
             </td>
             <td>
-                &nbsp Speed:
+                &nbsp Speed
                 <select id="sv-ch1-baudrate" name="sv-ch1-baudrate">
                     <option value="4800">4800</option>
                     <option value="9600">9600</option>
@@ -463,15 +463,15 @@
                 </select>
             </td>
             <td>
-                &nbsp Protocol:
+                &nbsp Protocol
                 <select id="sv-ch2-proto" name="sv-ch2-proto">
                     <option value="CI-V">CI-V</option>
                     <option value="CAT">CAT</option>
-                    <option value="NONE">NONE</option>
+                    <option value="OTHER">OTHER</option>
                 </select>
             </td>
             <td>
-                &nbsp Speed:
+                &nbsp Speed
                 <select id="sv-ch2-baudrate" name="sv-ch2-baudrate">
                     <option value="4800">4800</option>
                     <option value="9600">9600</option>
@@ -479,6 +479,57 @@
                     <option value="38400">38400</option>
                     <option value="57600">57600</option>
                     <option value="115200">115200</option>
+                </select>
+            </td>
+        </tr>
+    </table>
+    <hr>
+    <b>ATU Control</b>
+    <br>
+    <table>
+        <tr>
+            <td>Ch.1:</td>
+            <td>
+                <select id="sv-atu-1" name="sv-atu-1">
+                    <option value="NONE">NONE</option>
+                    <option value="AH-4">AH-4</option>
+                    <option value="OTHER">OTHER</option>
+                </select>
+            </td>
+            <td>
+                Address
+                0x<input type="text" id="sv-atu-addr1" name="sv-atu-addr1" value="A4" size="2">
+            </td>
+            <td>
+                Power
+                <select id="sv-atu-reduce1" name="sv-atu-reduce1">
+                    <option value="10">10%</option>
+                    <option value="20">20%</option>
+                    <option value="50">50%</option>
+                    <option value="100">100%</option>
+                </select>
+            </td>
+        </tr>
+        <tr>
+            <td>Ch.2:</td>
+            <td>
+                <select id="sv-atu-2" name="sv-atu-2">
+                    <option value="NONE">NONE</option>
+                    <option value="AH-4">AH-4</option>
+                    <option value="OTHER">OTHER</option>
+                </select>
+            </td>
+            <td>
+                Address
+                0x<input type="text" id="sv-atu-addr2" name="sv-atu-addr2" value="A4" size="2">
+            </td>
+            <td>
+                Power
+                <select id="sv-atu-reduce2" name="sv-atu-reduce2">
+                    <option value="10">10%</option>
+                    <option value="20">20%</option>
+                    <option value="50">50%</option>
+                    <option value="100">100%</option>
                 </select>
             </td>
         </tr>
@@ -494,5 +545,4 @@
         window.onload = onLoad();
     </script>
 </body>
-
 </html>

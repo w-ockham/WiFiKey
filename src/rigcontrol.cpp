@@ -68,13 +68,31 @@ void RigControl::setConfig(boolean serverp, DynamicJsonDocument &config)
         strlcpy(conf, config[ch + "proto"], sizeof(conf));
         if (strcmp(conf, "CAT") == 0)
             proto[i] = PROTO_CAT;
-        else if (strcmp(conf, "CIV") == 0)
+        else if (strcmp(conf, "CI-V") == 0)
             proto[i] = PROTO_CIV;
         else
-            proto[i] = NONE;
+            proto[i] = PROTO_OTHER;
 
         baudrate[i] = config[ch + "baudrate"];
     }
+
+    for (int i = 0; i < num_of_channel; i++)
+    {
+        ch = String(i + 1);
+        strlcpy(conf, config["sv-atu-" + ch], sizeof(conf));
+        if (strcmp(conf, "AH-4") == 0)
+            atutype[i] = ATU_AH4;
+        else if (strcmp(conf, "OTHER") == 0)
+            atutype[i] = ATU_OTHER;
+        else
+            atutype[i] = ATU_NONE;
+
+        strlcpy(conf, config["sv-atu-addr" + ch], sizeof(conf));
+        sscanf(conf, "%hhx", &civaddress[i]);
+
+        pwrreduce[i] = config["sv-atu-reduce" + ch];
+    }
+
     serial_setup();
 }
 
@@ -240,7 +258,7 @@ boolean RigControl::available(uint8_t channel)
     }
 }
 
-uint16_t RigControl::fromRig(uint8_t channel, SerialData &data)
+uint16_t RigControl::fromRig(uint8_t channel, SerialData &data, boolean storemsg)
 {
     if (!bready[channel])
     {
@@ -249,10 +267,13 @@ uint16_t RigControl::fromRig(uint8_t channel, SerialData &data)
     }
     memcpy(data.buffer, buffer[channel], bsize[channel]);
 
-    memcpy(lastmsg, buffer[channel], bsize[channel]);
-    lastch = channel;
-    lastsize = bsize[channel];
-    hasnewmsg = true;
+    if (storemsg)
+    {
+        memcpy(lastmsg, buffer[channel], bsize[channel]);
+        lastch = channel;
+        lastsize = bsize[channel];
+        hasnewmsg = true;
+    }
 
     data.channel = channel;
     data.size = bsize[channel];
@@ -262,7 +283,7 @@ uint16_t RigControl::fromRig(uint8_t channel, SerialData &data)
     return data.size;
 }
 
-uint16_t RigControl::toRig(SerialData &data)
+uint16_t RigControl::toRig(SerialData &data, boolean storemsg)
 {
     if (data.channel > num_of_channel - 1)
         return 0;
@@ -284,10 +305,13 @@ uint16_t RigControl::toRig(SerialData &data)
         return 0;
     }
 
-    memcpy(lastmsg, data.buffer, data.size);
-    lastch = data.channel;
-    lastsize = data.size;
-    hasnewmsg = true;
+    if (storemsg)
+    {
+        memcpy(lastmsg, data.buffer, data.size);
+        lastch = data.channel;
+        lastsize = data.size;
+        hasnewmsg = true;
+    }
 
     return data.size;
 }
@@ -317,6 +341,10 @@ String RigControl::decodedMsg(void)
         break;
     case IF_BLUETOOTH:
         msg = "BT";
+        if (bt_connected)
+            msg += "+";
+        else
+            msg += "-";
         break;
     }
 
@@ -326,6 +354,7 @@ String RigControl::decodedMsg(void)
         msg += "(CI-V):";
         msg += " TO:" + String(lastmsg[2], HEX);
         msg += " CMD:" + String(lastmsg[4], HEX);
+        msg += " SUB:" + String(lastmsg[5], HEX);
         for (int i = 6; i < lastsize; i++)
             msg += " " + String(lastmsg[i], HEX);
     }
@@ -347,14 +376,14 @@ boolean RigControl::catRead(int ch, const char *command, const char *arg, char *
     sprintf((char *)d.buffer, "%s%s;", command, arg);
     d.size = strlen((char *)d.buffer);
     d.channel = ch;
-    toRig(d);
+    toRig(d, false);
 
     now = millis();
-    while ((millis() - now) < 5000)
+    while ((millis() - now) < 1000)
     {
         if (available(ch))
         {
-            fromRig(ch, d);
+            fromRig(ch, d, false);
             if (d.size > 2)
             {
                 memcpy(res, &d.buffer[2], d.size - 3);
@@ -381,14 +410,14 @@ boolean RigControl::catSet(int ch, const char *command, const char *arg)
     sprintf((char *)d.buffer, "%s%s;", command, arg);
     d.size = strlen((char *)d.buffer);
     d.channel = ch;
-    toRig(d);
+    toRig(d, false);
 
     now = millis();
-    while (millis() - now < 100)
+    while (millis() - now < 500)
     {
         if (available(ch))
         {
-            fromRig(ch, d);
+            fromRig(ch, d, false);
             if (strncmp("?;", (char *)d.buffer, 2) == 0)
                 return false;
             return true;
@@ -401,80 +430,173 @@ boolean RigControl::civRead(int ch, uint16_t command, char *res)
 {
     SerialData d;
     unsigned long now;
+    int addr;
+    uint8_t com = command >> 8;
+    uint8_t subcom = command & 0xff;
 
-    d.buffer[0] = 0xfe;
-    d.buffer[1] = 0xfe;
-    d.buffer[2] = civ_addr_to;
-    d.buffer[3] = civ_addr_from;
-    d.buffer[4] = (command & 0xff00) >> 8;
-    d.buffer[5] = (uint8_t)(command & 0x00ff);
-    d.buffer[6] = 0xfd;
+    addr = 0;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = civaddress[ch];
+    d.buffer[addr++] = civ_addr_from;
+    d.buffer[addr++] = com;
 
-    d.size = 7;
+    if (com > 6)
+        d.buffer[addr++] = subcom;
+
+    d.buffer[addr++] = 0xfd;
+    d.size = addr + 1;
     d.channel = ch;
-    toRig(d);
+    toRig(d, false);
 
     now = millis();
-    while ((millis() - now) < 5000)
+    while ((millis() - now) < 1000)
     {
         if (available(ch))
         {
-            fromRig(ch, d);
+            fromRig(ch, d, false);
+            if (d.buffer[2] != civ_addr_from)
+                continue;
+
             if (d.buffer[d.size - 1] == 0xfd)
             {
-                memcpy(res, &d.buffer[6], d.size - 6);
-                res[d.size - 1] = '\0';
+                if (com > 6)
+                    memcpy(res, &d.buffer[6], d.size - 6);
+                else
+                    memcpy(res, &d.buffer[5], d.size - 5);
+#if DEBUG_LEVEL > 1
+                Serial.print("read command=");
+                Serial.print(command, HEX);
+                Serial.print(" size=");
+                Serial.print(d.size);
+                Serial.print(" ans=");
+                for (int i = 0; res[i] != 0xfd; i++)
+                {
+                    Serial.print(res[i], HEX);
+                    Serial.print(":");
+                }
+                Serial.println("");
+#endif
                 return true;
             }
             else
-            {
-                memcpy(res, d.buffer, d.size);
-                res[d.size] = '\0';
                 return false;
-            }
         }
     }
-    strcpy(res, "Timeout");
+    strcpy(res, "Read timeout");
     return false;
 }
 
-boolean RigControl::civSet(int ch, uint16_t command, uint8_t arg)
+boolean RigControl::civSet(int ch, uint16_t command, int argc, const char *arg)
 {
     SerialData d;
     unsigned long now;
+    int addr;
+    uint8_t com = command >> 8;
+    uint8_t subcom = command & 0xff;
 
-    d.buffer[0] = 0xfe;
-    d.buffer[1] = 0xfe;
-    d.buffer[2] = civ_addr_to;
-    d.buffer[3] = civ_addr_from;
-    d.buffer[4] = (command & 0xff00) >> 8;
-    d.buffer[5] = (uint8_t)(command & 0x00ff);
-    d.buffer[6] = arg;
-    d.buffer[7] = 0xfd;
+    addr = 0;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = civaddress[ch];
+    d.buffer[addr++] = civ_addr_from;
+    d.buffer[addr++] = com;
 
-    d.size = 8;
+    if (com > 6)
+        d.buffer[addr++] = subcom;
+
+    memcpy(&d.buffer[addr], arg, argc);
+
+    d.buffer[addr + argc] = 0xfd;
+    d.size = addr + argc + 1;
     d.channel = ch;
-    toRig(d);
+    toRig(d, false);
 
+#if DEBUG_LEVEL > 1
+    Serial.print("set command=");
+    Serial.print(command, HEX);
+    Serial.print(" size=");
+    Serial.print(d.size);
+    Serial.print(" arg=");
+    for (int i = 0; i < d.size; i++)
+    {
+        Serial.print(d.buffer[i], HEX);
+        Serial.print(":");
+    }
+    Serial.println("");
+#endif
     now = millis();
-    while (millis() - now < 100)
+    while (millis() - now < 500)
     {
         if (available(ch))
         {
-            fromRig(ch, d);
-            return true;
+            fromRig(ch, d, false);
+            if (d.buffer[2] != civ_addr_from)
+                continue;
+#if DEBUG_LEVEL > 1
+            Serial.print(" ans=");
+            for (int i = 0; i < d.size; i++)
+            {
+                Serial.print(d.buffer[i], HEX);
+                Serial.print(":");
+            }
+            Serial.println("");
+#endif
+            if (d.buffer[d.size - 1] == 0xfd && d.buffer[d.size - 2] == 0xfb)
+            {
+                return true;
+            }
+            else
+                return false;
         }
     }
-    return true;
+    return false;
+}
+
+int RigControl::readSWR(int channel, int proto, float &swr)
+{
+    char arg[16];
+    uint8_t val;
+    switch (proto)
+    {
+    case PROTO_CAT:
+        catRead(channel, "RM", "6", arg);
+        arg[4] = '\0';
+        sscanf(&arg[1], "%hhd", &val);
+        swr = 1.0 + val / 100.0;
+        break;
+
+    case PROTO_CIV:
+        civRead(channel, 0x1512, arg);
+        val = (uint8_t)arg[0] * 100 + ((uint8_t)arg[1] >> 4) * 10 + ((uint8_t)arg[1] % 10);
+        swr = 1.0 + val / 100.0;
+        break;
+    }
+
+    if (val < 15)
+        return HIGH;
+    else
+        return LOW;
 }
 
 boolean RigControl::startATU(int channel, SerialData &res)
 {
-    boolean result = true, tuneerror;
-    char pwr[16], mode[16], swr[16];
+    boolean result, tuneerror;
+    char pwr[16], mode[16], buff[2];
+    float swr;
     uint8_t state;
+    int rp;
     unsigned long now;
 
+    if (atutype[channel] == ATU_NONE)
+    {
+        sprintf((char *)res.buffer, "NO ATU connected.");
+        res.size = strlen((char *)res.buffer) + 1;
+        res.channel = channel;
+        return false;
+    }
+
+    result = true;
     switch (proto[channel])
     {
     case PROTO_CAT:
@@ -488,19 +610,23 @@ boolean RigControl::startATU(int channel, SerialData &res)
 
     case PROTO_CIV:
         /* Save current power & mode */
-        //result = result && civRead(channel, 0x140a, 0x1a);
+        result = result && civRead(channel, 0x140a, pwr);
         result = result && civRead(channel, 0x0400, mode);
         /* Set power to 10w and change RTTY mode */
-        //result = result && civRead(channel, 0x140a, 0x1a);
-        result = result && civSet(channel, 0x0200, 0x04);
+        result = result && civSet(channel, 0x0600, 1, "\x04");
+        rp = pwrreduce[channel];
+        buff[0] = rp / 100;
+        buff[1] = ((rp % 100 - rp % 10) / 10 << 4) + (rp % 10);
+        result = result && civSet(channel, 0x140a, 2, buff);
         break;
 
     default:
-        sprintf((char *)res.buffer, "NO ATU connected.");
+        /* Needs no control */
+        sprintf((char *)res.buffer, "Rig control unavailable.");
         res.size = strlen((char *)res.buffer) + 1;
         res.channel = channel;
-        return result;
         return false;
+        break;
     }
 
     if (!result)
@@ -512,27 +638,34 @@ boolean RigControl::startATU(int channel, SerialData &res)
         return result;
     }
 
-    /* Start AH-4 */
+    /* Start ATU */
     switch (proto[channel])
     {
     case PROTO_CAT:
         result = result && catSet(channel, "TX", "1");
         break;
     case PROTO_CIV:
-        result = result && civSet(channel, 0x1c00, 0x01);
+        result = result && civSet(channel, 0x1c00, 1, "\x01");
     }
 
-    delay(500);
-    digitalWrite(ah4_start, HIGH);
-    delay(1500);
-    digitalWrite(ah4_start, LOW);
-    delay(500);
+    if (atutype[channel] == ATU_AH4)
+    {
+        delay(500);
+        digitalWrite(ah4_start, HIGH);
+        delay(1500);
+        digitalWrite(ah4_start, LOW);
+        delay(500);
+    }
 
     now = millis();
     do
     {
         delay(200);
-        state = digitalRead(ah4_key);
+        if (atutype[channel] == ATU_AH4)
+            state = digitalRead(ah4_key);
+        else
+            state = readSWR(channel, proto[channel], swr);
+
     } while (state != HIGH && (millis() - now) < 10000);
 
     /*  Unable to tuning within 10 sec */
@@ -541,38 +674,38 @@ boolean RigControl::startATU(int channel, SerialData &res)
     else
         tuneerror = false;
 
+    readSWR(channel, proto[channel], swr);
+
     /* Stop transmission and restore params. */
     switch (proto[channel])
     {
     case PROTO_CAT:
-        result = result && catRead(channel, "RM", "6", swr);
         result = result && catSet(channel, "TX", "0");
+        delay(500);
         result = result && catSet(channel, "MD", mode);
+        delay(500);
         result = result && catSet(channel, "PC", pwr);
         break;
 
     case PROTO_CIV:
-        result = result && civRead(channel, 0x1512, swr);
-        result = result && civSet(channel, 0x1c00, 0x00);
-        result = result && civSet(channel, 0x0600, (uint8_t)mode[0]);
-        //result = result && civSet(channel, 0x140a, pwr);
+        result = result && civSet(channel, 0x1c00, 1, "\x00");
+        result = result && civSet(channel, 0x0600, 2, mode);
+        result = result && civSet(channel, 0x140a, 2, pwr);
         break;
     }
 
     if (tuneerror || state == LOW)
     {
-        sprintf((char *)res.buffer, "ERR K=%d T/O=%d", state, tuneerror);
+        sprintf((char *)res.buffer, "ERR ST=%d TO=%d", state, tuneerror);
         res.size = strlen((char *)res.buffer) + 1;
         res.channel = channel;
     }
     else
     {
-
-        swr[4] = '\0';
-        sprintf((char *)res.buffer, "DONE SWR=%s", &swr[1]);
+        sprintf((char *)res.buffer, "DONE SWR=%.2f", swr);
         res.size = strlen((char *)res.buffer) + 1;
         res.channel = channel;
     }
 
-    return tuneerror && result;
+    return !tuneerror && result;
 }

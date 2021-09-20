@@ -20,21 +20,6 @@ public:
 
 class RigControl
 {
-    enum
-    {
-        IF_USB,      /* Onboard USB */
-        IF_USBH,     /* HostAdapter */
-        IF_BLUETOOTH /* Onboard Bluetooth */
-    };
-    enum
-
-    {
-        NONE,       /* NONE */
-        PROTO_NONE, /* No protocol */
-        PROTO_CAT,  /*  CAT protocol */
-        PROTO_CIV   /* CIV */
-    };
-
     static char btname[64];
     int num_of_channel;
 
@@ -52,6 +37,10 @@ class RigControl
     uint8_t buffer[RIG_CTRL_CHANNEL][PKTBUFSIZ];
     boolean mready[RIG_CTRL_CHANNEL];
 
+    int atutype[RIG_CTRL_CHANNEL];
+    uint8_t civaddress[RIG_CTRL_CHANNEL];
+    uint8_t pwrreduce[RIG_CTRL_CHANNEL];
+
     uint8_t lastmsg[PKTBUFSIZ];
     int lastch, lastsize;
     boolean hasnewmsg;
@@ -66,6 +55,27 @@ class RigControl
     void serial_setup(void);
 
 public:
+    enum
+    {
+        IF_USB,      /* Onboard USB */
+        IF_USBH,     /* HostAdapter */
+        IF_BLUETOOTH /* Onboard Bluetooth */
+    };
+
+    enum
+    {
+        PROTO_CAT,   /*  CAT */
+        PROTO_CIV,   /* CI-V */
+        PROTO_OTHER, /* No protocol */
+    };
+
+    enum
+    {
+        ATU_AH4,   /*  AH4 */
+        ATU_OTHER, /*  OTHER */
+        ATU_NONE   /*  NONE */
+    };
+
     RigControl(int numchan) : Pl(&Usb, &AsyncOper)
     {
         num_of_channel = numchan;
@@ -119,8 +129,8 @@ public:
 
     void setConfig(boolean serverp, DynamicJsonDocument &config);
     boolean available(uint8_t channel);
-    uint16_t fromRig(uint8_t channel, SerialData &data);
-    uint16_t toRig(SerialData &data);
+    uint16_t fromRig(uint8_t channel, SerialData &data, boolean storemsg = true);
+    uint16_t toRig(SerialData &data, boolean storemsg = true);
     boolean receiving(void);
     String decodedMsg(void);
     boolean startATU(int, SerialData &);
@@ -128,7 +138,8 @@ public:
     boolean catRead(int, const char *, const char *, char *);
     boolean catSet(int, const char *, const char *);
     boolean civRead(int, uint16_t, char *);
-    boolean civSet(int, uint16_t, uint8_t);
+    boolean civSet(int, uint16_t, int, const char*);
+    int readSWR(int, int, float &);
 
     inline void loop(void)
     {
