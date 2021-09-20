@@ -142,7 +142,7 @@ WiFiKeyはICOMのATU「AH-4」の制御インターフェースを備えてい�
 
 ![ボード試作例](images/ESP32.jpg)
 
-トランシーバ側は`GPIO 27`を出力をフォトカプラ接続しトランシーバをキーイングします。またクライアント・サーバーともに動作確認のLEDを`GPIO 26`に接続しています。またAH-4の`START`出力に`GPIO 33`,`KEY`入力に`GPIO 16`を使っています。miniUSHボードとの接続は省略してありますのでネットで適宜さがしてください。
+トランシーバ側は`GPIO 27`を出力をフォトカプラ接続しトランシーバをキーイングします。またクライアント・サーバーともに動作確認のLEDを`GPIO 26`に接続しています。またAH-4の`START`出力に`GPIO 33`,`KEY`入力に`GPIO 16`を使っています。
 
 GPIOの入力は全てESP32内部でプルアップしています。また出力側には電流制限用に100Ωの抵抗を入れています(GPIOの出力を直接フォトカプラやLEDに接続しないでください)。なお、評価ボードによっては書込時にタイミングの問題で失敗するものがありますが、EN-GND間に2.2uF程度のコンデンサを入れると安定するようです。
 
@@ -153,6 +153,9 @@ GPIOの入力は全てESP32内部でプルアップしています。また出�
 | 26 | 出力 | LED出力 |
 | 27 | 出力 | フォトカプラ用出力|
 | 33 | 出力 | AH-4 START |
+
+USBホストアダプタにはMAX3421を使った一般的なものを使っています。[こちら](https://bit.ly/3AqGBOX)や[こちら](https://bit.ly/39nYyBQ)の記事を参考に接続してください。
+またRS-232C・USB変換ケーブルはProlificのPL2303を使用したものを使っています。FTDI等他のチップを使う場合はクラス`RigControl`のメンバ変数`Pl`のクラスを適宜変更してください。
 
 ***
 # ソフトウェア編
@@ -172,7 +175,24 @@ WiFiKeyに起動時にNVMに保存されたバージョンと`config.json`のバ
 | servermode| "%checked%"|サーバーモード　`%checked%`の場合サーバーとして起動|〃|
 | servername| "wifikey" | サーバー名 |設定変更後|
 |enablebt| "%checked%"| Bluetooth機能　`%checked%`で起動(サーバーのみ) |〃|
-|baudrate| 115200 | シリアル接続の速度 |〃|
+|cl-ch1-media|"USB"|クライアントch.1のインターフェース種類|〃|
+|cl-ch2-media|"BT" |クライアントch.2のインターフェース種類|〃|
+|cl-ch1-proto|"CAT"|クライアントch.1のプロトコル|〃|
+|cl-ch2-proto|"CI-V"|クライアントch.2のプロトコル|〃|
+|cl-ch1-baudrate|4800|クライアントch.1の速度|〃|
+|cl-ch2-baudrate|115200|クライアントch.2の速度|〃|
+|sv-ch1-media|"USB"|サーバーch.1のインターフェース種類|〃|
+|sv-ch2-media|"BT" |サーバーch.2のインターフェース種類|〃|
+|sv-ch1-proto|"CAT"|サーバーch.1のプロトコル|〃|
+|sv-ch2-proto|"CI-V"|サーバーch.2のプロトコル|〃|
+|sv-ch1-baudrate|4800|サーバーch.1の速度|〃|
+|sv-ch2-baudrate|115200|サーバーch.2の速度|〃|
+|sv-atu-1|"AH-4"| サーバ ch.1に接続されたATU |〃|
+|sv-atu-addr1|"A4"|ch.1に接続されたリグのCI-Vアドレス|〃|
+|sv-atu-reduce1|100|ch.1のチューン時の出力電力(100%)|〃|
+|sv-atu-2|"AH-4"| ch.2に接続されたATU|〃|
+|sv-atu-addr2| "A4"|ch.2に接続されたリグのCI-Vアドレス|〃|
+|sv-atu-reduce2|100|ch.1のチューン時の出力電力(100%)|〃|
 | wifistn | %notchecked% | Wi-Fiモード　`%checked%`の場合Wi-Fiステーションとして起動|リブート後|
 | SSID1| - | ステーション時のSSID1 |〃|
 | passwd1| - | SSID1のパスワード |〃|
