@@ -211,5 +211,5 @@ WiFiKeyに起動時にNVMに保存されたバージョンと`config.json`のバ
 | symbol |2| シンボルウェイト|〃|
 
 ## 開発環境について
-Visual Studio CodeとPlatformIOを使っています。GitHubからZIPファイルを展開後、`Add Project`で追加してください。 また外部ライブラリとしてArduinoJSON・FastLEDを使っています。自動でインストールされない場合は`PIO Home`の`Libraries`から検索してインストールしてください。
+Visual Studio CodeとPlatformIOを使っています。GitHubからZIPファイルを展開後、`Add Project`で追加してください。 また外部ライブラリとしてArduinoJSON・FastLED・USB Host Shield 2.0を使っています。自動でインストールされない場合は`PIO Home`の`Libraries`から検索してインストールしてください。
 次に`Project Environment`でボードを選択してビルド後アップロードをします。最後に`data`フォルダーにある設定画面のHTMLファイル・設定ファイルを`Platoform`の`Upload Filesystem Image`を使ってアップロードして完了です。
