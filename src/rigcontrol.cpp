@@ -660,12 +660,11 @@ boolean RigControl::startATU(int channel, SerialData &res)
     now = millis();
     do
     {
-        delay(200);
         if (atutype[channel] == ATU_AH4)
             state = digitalRead(ah4_key);
         else
             state = readSWR(channel, proto[channel], swr);
-
+        delay(1000);
     } while (state != HIGH && (millis() - now) < 10000);
 
     /*  Unable to tuning within 10 sec */
@@ -681,9 +680,7 @@ boolean RigControl::startATU(int channel, SerialData &res)
     {
     case PROTO_CAT:
         result = result && catSet(channel, "TX", "0");
-        delay(500);
         result = result && catSet(channel, "MD", mode);
-        delay(500);
         result = result && catSet(channel, "PC", pwr);
         break;
 
