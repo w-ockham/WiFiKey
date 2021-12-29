@@ -584,7 +584,7 @@ boolean RigControl::startATU(int channel, SerialData &res)
     boolean result, tuneerror;
     char pwr[16], mode[16], buff[2];
     float swr;
-    uint8_t state;
+    uint8_t state, stable;
     int rp;
     unsigned long now;
 
@@ -650,22 +650,28 @@ boolean RigControl::startATU(int channel, SerialData &res)
 
     if (atutype[channel] == ATU_AH4)
     {
-        delay(500);
+        delay(100);
         digitalWrite(ah4_start, HIGH);
-        delay(1500);
+        delay(800);
         digitalWrite(ah4_start, LOW);
-        delay(500);
     }
 
     now = millis();
+    stable = 5;
     do
     {
+        delay(500);
         if (atutype[channel] == ATU_AH4)
             state = digitalRead(ah4_key);
         else
             state = readSWR(channel, proto[channel], swr);
-        delay(1000);
-    } while (state != HIGH && (millis() - now) < 10000);
+        
+        if (state == HIGH)
+            stable--;
+        else
+            stable = 5;
+
+    } while (stable != 0 && (millis() - now) < 10000);
 
     /*  Unable to tuning within 10 sec */
     if ((millis() - now) > 10000)
