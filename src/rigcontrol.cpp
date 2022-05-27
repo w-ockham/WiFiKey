@@ -280,6 +280,13 @@ uint16_t RigControl::fromRig(uint8_t channel, SerialData &data, boolean storemsg
     bready[channel] = false;
     bsize[channel] = 0;
 
+    if (proto[channel] == PROTO_CIV)
+    {
+        if (data.size == 11 && data.buffer[0] == 0xfe && data.buffer[1] == 0xfe && data.buffer[4] == 0x00)
+        {
+            civReadFreq(channel, &data.buffer[5]);
+        }
+    }
     return data.size;
 }
 
@@ -357,6 +364,7 @@ String RigControl::decodedMsg(void)
         msg += " SUB:" + String(lastmsg[5], HEX);
         for (int i = 6; i < lastsize; i++)
             msg += " " + String(lastmsg[i], HEX);
+        msg += "<br>Freq:" + String(lastfreq);
     }
     else if (c >= 'A' || c <= 'Z')
     {
@@ -553,6 +561,54 @@ boolean RigControl::civSet(int ch, uint16_t command, int argc, const char *arg)
     return false;
 }
 
+void RigControl::civReadFreq(int channel, uint8_t civdata[])
+{
+    uint32_t freq = 0, pw = 1;
+
+    for (int i = 0; i <= 4; i++)
+    {
+        freq += (civdata[i] & 0x0f) * pw + ((civdata[i] >> 4) & 0x0f) * pw * 10;
+        pw = pw * 100;
+    }
+
+    rigfreq[channel] = freq;
+    lastfreq = freq;
+}
+
+void RigControl::civSetFreq(int channel, uint32_t freq)
+{
+    rigfreq[channel] = freq;
+    lastfreq = freq;
+    civSetFreq(channel, (int)0);
+}
+
+void RigControl::civSetFreq(int channel, int offset)
+{
+    uint32_t freq, pw = 10;
+    int addr;
+    SerialData d;
+
+    freq = rigfreq[channel] + offset;
+    rigfreq[channel] = freq;
+    lastfreq = freq;
+
+    addr = 0;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = 0xfe;
+    d.buffer[addr++] = civaddress[channel];
+    d.buffer[addr++] = civ_addr_from;
+    d.buffer[addr++] = 0x00;
+    for (int i = 0; i <= 4; i++)
+    {
+        d.buffer[addr++] = ((freq % (pw * 10)) / 10) << 4 | (freq % pw);
+        freq = freq / 100;
+    }
+    d.buffer[addr++] = 0xfd;
+    d.size = addr;
+    d.channel = channel;
+    toRig(d, true);
+}
+
 int RigControl::readSWR(int channel, int proto, float &swr)
 {
     char arg[16];
@@ -588,7 +644,9 @@ boolean RigControl::startATU(int channel, SerialData &res)
     int rp;
     unsigned long now;
 
-    if (atutype[channel] == ATU_NONE)
+    int to_channel = redirect(channel);
+
+    if (atutype[to_channel] == ATU_NONE)
     {
         sprintf((char *)res.buffer, "NO ATU connected.");
         res.size = strlen((char *)res.buffer) + 1;
@@ -597,27 +655,27 @@ boolean RigControl::startATU(int channel, SerialData &res)
     }
 
     result = true;
-    switch (proto[channel])
+    switch (proto[to_channel])
     {
     case PROTO_CAT:
         /* Save current power & mode */
-        result = result && catRead(channel, "PC", "", pwr);
-        result = result && catRead(channel, "MD", "0", mode);
+        result = result && catRead(to_channel, "PC", "", pwr);
+        result = result && catRead(to_channel, "MD", "0", mode);
         /* Set power to 10w and change RTTY mode */
-        result = result && catSet(channel, "PC", "010");
-        result = result && catSet(channel, "MD", "06");
+        result = result && catSet(to_channel, "PC", "010");
+        result = result && catSet(to_channel, "MD", "06");
         break;
 
     case PROTO_CIV:
         /* Save current power & mode */
-        result = result && civRead(channel, 0x140a, pwr);
-        result = result && civRead(channel, 0x0400, mode);
+        result = result && civRead(to_channel, 0x140a, pwr);
+        result = result && civRead(to_channel, 0x0400, mode);
         /* Set power to 10w and change RTTY mode */
-        result = result && civSet(channel, 0x0600, 1, "\x04");
-        rp = pwrreduce[channel];
+        result = result && civSet(to_channel, 0x0600, 1, "\x04");
+        rp = pwrreduce[to_channel];
         buff[0] = rp / 100;
         buff[1] = ((rp % 100 - rp % 10) / 10 << 4) + (rp % 10);
-        result = result && civSet(channel, 0x140a, 2, buff);
+        result = result && civSet(to_channel, 0x140a, 2, buff);
         break;
 
     default:
@@ -639,16 +697,16 @@ boolean RigControl::startATU(int channel, SerialData &res)
     }
 
     /* Start ATU */
-    switch (proto[channel])
+    switch (proto[to_channel])
     {
     case PROTO_CAT:
-        result = result && catSet(channel, "TX", "1");
+        result = result && catSet(to_channel, "TX", "1");
         break;
     case PROTO_CIV:
-        result = result && civSet(channel, 0x1c00, 1, "\x01");
+        result = result && civSet(to_channel, 0x1c00, 1, "\x01");
     }
 
-    if (atutype[channel] == ATU_AH4)
+    if (atutype[to_channel] == ATU_AH4)
     {
         delay(100);
         digitalWrite(ah4_start, HIGH);
@@ -661,11 +719,11 @@ boolean RigControl::startATU(int channel, SerialData &res)
     do
     {
         delay(500);
-        if (atutype[channel] == ATU_AH4)
+        if (atutype[to_channel] == ATU_AH4)
             state = digitalRead(ah4_key);
         else
-            state = readSWR(channel, proto[channel], swr);
-        
+            state = readSWR(channel, proto[to_channel], swr);
+
         if (state == HIGH)
             stable--;
         else
@@ -679,21 +737,21 @@ boolean RigControl::startATU(int channel, SerialData &res)
     else
         tuneerror = false;
 
-    readSWR(channel, proto[channel], swr);
+    readSWR(to_channel, proto[channel], swr);
 
     /* Stop transmission and restore params. */
-    switch (proto[channel])
+    switch (proto[to_channel])
     {
     case PROTO_CAT:
-        result = result && catSet(channel, "TX", "0");
-        result = result && catSet(channel, "MD", mode);
-        result = result && catSet(channel, "PC", pwr);
+        result = result && catSet(to_channel, "TX", "0");
+        result = result && catSet(to_channel, "MD", mode);
+        result = result && catSet(to_channel, "PC", pwr);
         break;
 
     case PROTO_CIV:
-        result = result && civSet(channel, 0x1c00, 1, "\x00");
-        result = result && civSet(channel, 0x0600, 2, mode);
-        result = result && civSet(channel, 0x140a, 2, pwr);
+        result = result && civSet(to_channel, 0x1c00, 1, "\x00");
+        result = result && civSet(to_channel, 0x0600, 2, mode);
+        result = result && civSet(to_channel, 0x140a, 2, pwr);
         break;
     }
 
@@ -711,4 +769,248 @@ boolean RigControl::startATU(int channel, SerialData &res)
     }
 
     return !tuneerror && result;
+}
+
+boolean RigControl::encoderMain(uint8_t channel, int dir, int step)
+{
+    SerialData d;
+    int mul = 1;
+
+    int com_channel = banddata[current_band[channel]].channel;
+
+    switch (proto[com_channel])
+    {
+    case PROTO_CAT:
+        if (dir == ENC_UP)
+            sprintf((char *)d.buffer, "EU0%02d;", step);
+        else
+            sprintf((char *)d.buffer, "ED0%02d;", step);
+
+        d.size = strlen((char *)d.buffer);
+        d.channel = com_channel;
+        toRig(d, false);
+        return true;
+        break;
+
+    case PROTO_CIV:
+        if (dir == ENC_UP)
+            civSetFreq(com_channel, step * tune_fine_step[banddata[current_band[channel]].mode]);
+        else
+            civSetFreq(com_channel, -1 * step * tune_fine_step[banddata[current_band[channel]].mode]);
+        return true;
+        break;
+
+    default:
+        return false;
+    }
+}
+
+boolean RigControl::encoderSub(uint8_t channel, int dir, int step)
+{
+    SerialData d;
+
+    int com_channel = banddata[current_band[channel]].channel;
+    int mode = banddata[current_band[channel]].mode;
+    int multi = tune_coarse_step[mode] / (tune_fine_step[mode] * 10);
+
+    switch (proto[com_channel])
+    {
+    case PROTO_CAT:
+        if (dir == ENC_UP)
+            sprintf((char *)d.buffer, "EU1%02d;", step * multi);
+        else
+            sprintf((char *)d.buffer, "ED1%02d;", step * multi);
+
+        d.size = strlen((char *)d.buffer);
+        d.channel = com_channel;
+        toRig(d, false);
+        return true;
+        break;
+
+    case PROTO_CIV:
+        if (dir == ENC_UP)
+            civSetFreq(com_channel, (int)step * tune_coarse_step[banddata[current_band[channel]].mode]);
+        else
+            civSetFreq(com_channel, (int)-1 * step * tune_coarse_step[banddata[current_band[channel]].mode]);
+        return true;
+        break;
+
+    default:
+        return false;
+    }
+}
+
+boolean RigControl::encoderMode(uint8_t channel, int dir, int step)
+{
+    SerialData d;
+    char buff[16];
+
+    int com_channel = banddata[current_band[channel]].channel;
+    int mode = banddata[current_band[channel]].mode;
+
+    if (step != 0)
+    {
+        if (dir == ENC_UP)
+            mode++;
+        else
+            mode--;
+
+        if (mode < 0)
+            mode = M_AM;
+        else if (mode > M_AM)
+            mode = M_CW;
+    }
+
+    banddata[current_band[channel]].mode = mode;
+
+    switch (proto[com_channel])
+    {
+    case PROTO_CAT:
+        switch (mode)
+        {
+        case M_CW:
+            sprintf((char *)d.buffer, "MD03;");
+            break;
+        case M_USB:
+            sprintf((char *)d.buffer, "MD02;");
+            break;
+        case M_LSB:
+            sprintf((char *)d.buffer, "MD01;");
+            break;
+        case M_FM:
+            sprintf((char *)d.buffer, "MD04;");
+            break;
+        case M_AM:
+            sprintf((char *)d.buffer, "MD05;");
+            break;
+        }
+
+        d.size = strlen((char *)d.buffer);
+        d.channel = com_channel;
+        toRig(d, false);
+        return true;
+        break;
+
+    case PROTO_CIV:
+        switch (mode)
+        {
+        case M_CW:
+            buff[0] = 0x03;
+            break;
+        case M_USB:
+            buff[0] = 0x01;
+            break;
+        case M_LSB:
+            buff[0] = 0x00;
+            break;
+        case M_FM:
+            buff[0] = 0x05;
+            break;
+        case M_AM:
+            buff[0] = 0x02;
+            break;
+        }
+        civSet(com_channel, 0x0100, 1, buff);
+        return true;
+        break;
+
+    default:
+        return false;
+    }
+}
+
+boolean RigControl::encoderBand(uint8_t channel, int dir, int step)
+{
+    SerialData d;
+    char buff[16];
+
+    int band = current_band[channel];
+    int com_channel = banddata[current_band[channel]].channel;
+
+    banddata[band].freq = rigfreq[com_channel];
+
+    if (dir == ENC_UP)
+        band++;
+    else
+        band--;
+
+    if (band < 0)
+        band = B_END - 1;
+    else if (band >= B_END)
+        band = B_80m;
+
+    current_band[channel] = band;
+    com_channel = banddata[band].channel;
+
+    switch (proto[com_channel])
+    {
+    case PROTO_CAT:
+        switch (band)
+        {
+        case B_80m:
+            sprintf((char *)d.buffer, "BS01;");
+            break;
+        case B_40m:
+            sprintf((char *)d.buffer, "BS03;");
+            break;
+        case B_30m:
+            sprintf((char *)d.buffer, "BS04;");
+            break;
+        case B_20m:
+            sprintf((char *)d.buffer, "BS05;");
+            break;
+        case B_17m:
+            sprintf((char *)d.buffer, "BS06;");
+            break;
+        case B_15m:
+            sprintf((char *)d.buffer, "BS07;");
+            break;
+        case B_13m:
+            sprintf((char *)d.buffer, "BS08;");
+            break;
+        case B_10m:
+            sprintf((char *)d.buffer, "BS09;");
+            break;
+        case B_6m:
+            sprintf((char *)d.buffer, "BS10;");
+            break;
+        case B_GEN:
+            sprintf((char *)d.buffer, "BS11;");
+            break;
+        case B_MW:
+            sprintf((char *)d.buffer, "BS12;");
+            break;
+        default:
+            return true;
+        }
+        d.size = strlen((char *)d.buffer);
+        d.channel = com_channel;
+        toRig(d, false);
+        return true;
+        break;
+
+    case PROTO_CIV:
+        switch (band)
+        {
+        case B_2m:
+            buff[0] = 0x13;
+            buff[1] = 0x01;
+
+            break;
+        case B_70cm:
+            buff[0] = 0x14;
+            buff[1] = 0x01;
+
+            break;
+        default:
+            return true;
+        }
+        civSet(com_channel, 0x1A01, 2, buff);
+        civSetFreq(com_channel, (uint32_t)banddata[band].freq);
+        return true;
+        break;
+
+    default:
+        return false;
+    }
 }

@@ -5,7 +5,6 @@
 #include <ESPmDNS.h>
 #include <MD5Builder.h>
 #include <FastLED.h>
-
 #ifdef ARDUINO_M5Stack_ATOM
 #define M5ATOM
 #endif
@@ -14,7 +13,7 @@
 #include "config_settings.h"
 #include "ringqueue.h"
 #include "rigcontrol.h"
-
+#include "RotaryEncoder.h"
 /* WiFi & IP Address Configrations */
 /* Keyer ID and password */
 char keyer_name[64];
@@ -120,6 +119,18 @@ void set_led(CRGB color)
 RingQueue<DotDash> queue = RingQueue<DotDash>();
 unsigned long lastqueued;
 
+#ifdef TUNE_ENCODER
+enum
+{
+  ENC_MAIN,
+  ENC_SUB,
+  ENC_MODE,
+  ENC_BAND,
+  ENC_END
+};
+RotaryEncoder *encoder[ENC_END];
+#endif
+
 /* ISR Stuff */
 #define STABLEPERIOD 10 /* Discard Interrupts 10msec */
 volatile int numofint = 0, numofint2 = 0;
@@ -152,6 +163,28 @@ void IRAM_ATTR ButtonInput()
   lastmillis2 = xTaskGetTickCount();
   portEXIT_CRITICAL_ISR(&mux2);
 }
+
+#ifdef TUNE_ENCODER
+void IRAM_ATTR checkMain()
+{
+  encoder[ENC_MAIN]->tick_isr();
+}
+
+void IRAM_ATTR checkSub()
+{
+  encoder[ENC_SUB]->tick_isr();
+}
+
+void IRAM_ATTR checkMode()
+{
+  encoder[ENC_MODE]->tick_isr();
+}
+
+void IRAM_ATTR checkBand()
+{
+  encoder[ENC_BAND]->tick_isr();
+}
+#endif
 
 void processKeyInput()
 {
@@ -267,7 +300,7 @@ void processButtonInput()
         startatu = 5;
         atumessage = "START";
         send_udp(keying_server, keying_server_port, k);
-   
+
         for (int i = 0; i < 3; i++)
         {
           set_led(chcolor[currentchannel]);
@@ -283,8 +316,93 @@ void processButtonInput()
     numofint2 = 0;
     portEXIT_CRITICAL(&mux2);
   }
-
 }
+
+#ifdef TUNE_ENCODER
+void processsEncoderInput()
+{
+  KeyerPkt k;
+  static int pos[ENC_END] = {0, 0, 0, 0};
+  int newpos;
+  RotaryEncoder::Direction dir;
+  
+  constexpr float m = 10;
+  constexpr float longCutoff = 10;
+  constexpr float shortCutoff = 6;
+  constexpr float a = (m - 1) / (shortCutoff - longCutoff);
+  constexpr float b = 1 - longCutoff * a;
+
+
+  if (server_mode || serverstate != KEYER_ACTIVE)
+    return;
+
+  for (int i = ENC_MAIN; i < ENC_END; i++)
+  {
+
+    encoder[i]->tick();
+    newpos = encoder[i]->getPosition();
+    dir = encoder[i]->getDirection();
+
+    if (newpos != pos[i])
+    {  
+      unsigned long ms = encoder[i]->getMillisBetweenRotations();
+      
+      if ((i == ENC_MAIN) && (ms < longCutoff)) {
+        if (ms < shortCutoff) {
+          ms = shortCutoff;
+        }
+        float ticksActual_float = a * ms + b;
+        long deltaTicks = (long)ticksActual_float * (newpos - pos[i]);
+        newpos = newpos + deltaTicks;
+        encoder[i]->setPosition(newpos);
+      }
+      
+      //Serial.printf("enc=%d step=%d", i, newpos - pos[i]);
+      k.edata.step = abs(newpos - pos[i]);
+      pos[i] = newpos;
+      if (dir == RotaryEncoder::Direction::CLOCKWISE)
+      {
+        //Serial.println(" rot=UP");
+        switch (i)
+        {
+        case ENC_MAIN:
+          k.type = PKT_MAIN_UP;
+          break;
+        case ENC_SUB:
+          k.type = PKT_SUB_UP;
+          break;
+        case ENC_MODE:
+          k.type = PKT_MODE_UP;
+          break;
+        case ENC_BAND:
+          k.type = PKT_BAND_UP;
+          break;
+        }
+      }
+      else
+      {
+        //Serial.println(" rot=DOWN");
+        switch (i)
+        {
+        case ENC_MAIN:
+          k.type = PKT_MAIN_DOWN;
+          break;
+        case ENC_SUB:
+          k.type = PKT_SUB_DOWN;
+          break;
+        case ENC_MODE:
+          k.type = PKT_MODE_DOWN;
+          break;
+        case ENC_BAND:
+          k.type = PKT_BAND_DOWN;
+          break;
+        }
+      }
+      send_udp(keying_server, keying_server_port, k);
+    }
+  }
+}
+#endif
 
 void debug_print(const char *msg, DotDash &d)
 {
@@ -337,6 +455,35 @@ void debug_sem(String mesg, KeyerPkt p)
   case PKT_KEEPALIVE:
     type = "KEEPALIVE";
     break;
+  case PKT_MAIN_UP:
+    type = "MAIN_UP";
+    break;
+  case PKT_MAIN_DOWN:
+    type = "MAIN_DOWN";
+    break;
+  case PKT_SUB_UP:
+    type = "SUB_UP";
+    break;
+  case PKT_SUB_DOWN:
+    type = "SUB_DOWN";
+    break;
+  case PKT_BAND_UP:
+    type = "BAND_UP";
+    break;
+  case PKT_BAND_DOWN:
+    type = "BAND_DOWN";
+    break;
+  case PKT_MODE_UP:
+    type = "MODE_UP";
+    break;
+  case PKT_MODE_DOWN:
+    type = "MODE_DOWN";
+    break;
+  case PKT_MODE_TOGGLE:
+    type = "MODE_TOGGLE";
+    break;
+  case PKT_START_ATU:
+    type = "START_ATU" : break;
   }
   switch (serverstate)
   {
@@ -689,11 +836,54 @@ void process_incoming_packet(void)
             send_udp(authsender, authport, k);
           }
           set_led(blackcolor);
+          settimeout(idletimer);
+        }
+        break;
+
+        /* Tuner Encoder */
+      case PKT_MAIN_UP:
+      case PKT_MAIN_DOWN:
+      case PKT_SUB_UP:
+      case PKT_SUB_DOWN:
+      case PKT_MODE_UP:
+      case PKT_MODE_DOWN:
+      case PKT_BAND_UP:
+      case PKT_BAND_DOWN:
+        if (server_mode)
+        {
+          int dir = RigControl::ENC_DOWN;
+          switch (k.type)
+          {
+          case PKT_MAIN_UP:
+            dir = RigControl::ENC_UP;
+          case PKT_MAIN_DOWN:
+            rigcon.encoderMain(currentchannel, dir, k.edata.step);
+            break;
+
+          case PKT_SUB_UP:
+            dir = RigControl::ENC_UP;
+          case PKT_SUB_DOWN:
+            rigcon.encoderSub(currentchannel, dir, k.edata.step);
+            break;
+
+          case PKT_MODE_UP:
+            dir = RigControl::ENC_UP;
+          case PKT_MODE_DOWN:
+            rigcon.encoderMode(currentchannel, dir, k.edata.step);
+            break;
+
+          case PKT_BAND_UP:
+            dir = RigControl::ENC_UP;
+          case PKT_BAND_DOWN:
+            rigcon.encoderBand(currentchannel, dir, k.edata.step);
+            break;
+          }
+          settimeout(idletimer);
         }
         break;
 #endif
       /* ATU OK response */
-      case PKT_ATU_OK:        
+      case PKT_ATU_OK:
         atumessage = (char *)k.sdata.buffer;
         for (int i = 0; i < 3; i++)
         {
@@ -746,14 +936,9 @@ void process_incoming_packet(void)
           serverstate = KEYER_WAIT;
         }
         break;
-
       default:
         break;
       }
-      break;
-
-    default:
-      break;
     }
   }
 }
@@ -1012,7 +1197,7 @@ void handleRoot(void)
       mode +
       "</td></tr>"
       "</table><hr>"
-      "<iframe src=\"./stats.html\" width=\"320\" height=\"240\"></iframe>"
+      "<iframe src=\"./stats.html\" width=\"320\" height=\"320\"></iframe>"
       "<hr>"
       "<button onclick=\"location.href='./settings.html'\">Settings</button>"
       "</body></html>";
@@ -1100,10 +1285,10 @@ void handleStats(void)
       String(pkt_error) +
       "<br>";
 
-  if (startatu > 0) 
+  if (startatu > 0)
   {
     startatu--;
-    response += "ATU:" + atumessage +"<br>";
+    response += "ATU:" + atumessage + "<br>";
   }
 
   if (server_mode)
@@ -1356,10 +1541,6 @@ void update_config(void)
   queuelatency = config["latency"];
   symbolwait = config["symbol"];
 
-  if (!server_mode)
-    send_config(keying_server, keying_server_port);
-  pkt_error = 0;
-
   if (strcmp(keyer_passwd, config["keyerpasswd"]) != 0)
   {
     reauth = true;
@@ -1387,10 +1568,14 @@ void update_config(void)
     }
   }
 
-  rigcon.setConfig(server_mode, config);
-
   if (reauth)
     start_auth();
+
+  if (!server_mode)
+    send_config(keying_server, keying_server_port);
+  pkt_error = 0;
+
+  rigcon.setConfig(server_mode, config);
 }
 
 void load_config()
@@ -1501,6 +1686,24 @@ void setup()
   pinMode(gpio_key, INPUT_PULLUP);
   pinMode(gpio_button, INPUT_PULLUP);
 
+#ifdef TUNE_ENCODER
+  encoder[ENC_MAIN] = new RotaryEncoder(gpio_MAIN_a, gpio_MAIN_b, RotaryEncoder::LatchMode::TWO03, INPUT);
+  attachInterrupt(digitalPinToInterrupt(gpio_MAIN_a), checkMain, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(gpio_MAIN_b), checkMain, CHANGE);
+ 
+  encoder[ENC_SUB] = new RotaryEncoder(gpio_SUB_a, gpio_SUB_b, RotaryEncoder::LatchMode::FOUR3);
+  attachInterrupt(digitalPinToInterrupt(gpio_SUB_a), checkSub, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(gpio_SUB_b), checkSub, CHANGE);
+ 
+  encoder[ENC_MODE] = new RotaryEncoder(gpio_MODE_a, gpio_MODE_b, RotaryEncoder::LatchMode::FOUR3);
+  attachInterrupt(digitalPinToInterrupt(gpio_MODE_a), checkMode, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(gpio_MODE_b), checkMode, CHANGE);
+ 
+  encoder[ENC_BAND] = new RotaryEncoder(gpio_BAND_a, gpio_BAND_b, RotaryEncoder::LatchMode::TWO03);
+  attachInterrupt(digitalPinToInterrupt(gpio_BAND_a), checkBand, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(gpio_BAND_b), checkBand, CHANGE);
+#endif
+
   init_led();
 
   connected = false;
@@ -1600,7 +1803,9 @@ void loop()
       /* Process Keyer Client Loop */
       processKeyInput();
       processButtonInput();
-
+#ifdef TUNE_ENCODER
+      processsEncoderInput();
+#endif
       switch (serverstate)
       {
       case KEYER_WAIT:
